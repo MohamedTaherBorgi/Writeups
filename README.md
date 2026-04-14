@@ -10,9 +10,9 @@ the rabbit holes, and the reasoning behind every pivot.
 
 ## Writeups
 
-| Room                            | Platform  | Difficulty | Topics                                      |
-| ------------------------------- | --------- | ---------- | ------------------------------------------- |
-| [Ra](./TryHackMe/Ra/Writeup.md) | TryHackMe | Hard       | Active Directory, XMPP, NetNTLM, BloodHound |
+| Room                               | Platform  | Difficulty | Topics                                      |
+| ---------------------------------- | --------- | ---------- | ------------------------------------------- |
+| [Ra](./TryHackMe/Ra/Ra_Writeup.md) | TryHackMe | Hard       | Active Directory, XMPP, NetNTLM, BloodHound |
 
 ## About
 
