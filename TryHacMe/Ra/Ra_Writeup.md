@@ -8,7 +8,7 @@
 ---
 
 <div align="center">
-  <img src="./assets/ra.jpeg" alt="Ra" width="600"/>
+  <img src="./assets/ra.png" alt="Ra" width="400"/>
 </div>
 
 ---
