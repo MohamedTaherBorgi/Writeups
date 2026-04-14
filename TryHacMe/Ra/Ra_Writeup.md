@@ -4,7 +4,6 @@
 **Difficulty:** Hard
 **Infrastructure:** Active Directory / Windows Server 2019
 **Made by:** @4nqr34z and @theart42
-**Tags:** `Active Directory` `XMPP` `NetNTLM` `BloodHound` `Invoke-Expression Injection` `GenericAll`
 
 ---
 
@@ -27,7 +26,10 @@ You have gained access to the internal network of WindCorp, a multibillion dolla
 └─$ nmap -Pn -A -T4 -vv 10.112.176.170 -oN nmap.txt
 ```
 
-Briefly on the flags `-A` enables aggressive mode: OS detection, version detection, script scanning, and traceroute all in one. `-T4` is the aggressive timing template, speeds things up significantly without being reckless about it. And always save your scans with `-oN`, you will want to grep through them later.
+Briefly on the flags :
+`-A` enables aggressive mode: OS detection, version detection, script scanning, and traceroute all in one.
+`-T4` is the aggressive timing template, speeds things up significantly without being reckless about it.
+And always save your scans with `-oN`, you will want to grep through them later.
 
 ```
 PORT     STATE SERVICE       VERSION
@@ -770,7 +772,9 @@ Mode    LastWriteTime    Length Name
 
 ## Closing Thoughts
 
-In my journey for the **eCPPT** and **CRTP** prep, I found this room very helpful and rich. It covers a realistic multi-stage attack chain that does not hand you anything — web OSINT, XMPP protocol abuse, Active Directory permissions exploitation, and scheduled task injection all chained together. That kind of cross-domain thinking is exactly what those certifications test, and what real engagements look like.
+In my journey for the **eCPPT** and **CRTP** prep, I found this room very helpful and rich. It covers a realistic multi-stage attack chain that does not hand you anything — **web OSINT**, **XMPP protocol abuse**, **Active Directory permissions exploitation**, and **scheduled task injection** all chained together.
+
+That kind of cross-domain thinking is exactly what those certifications test, and what **real engagements** look like.
 
 As I said before, I did not just put a list of successful commands to pwn this box. I shared my thinking methodology as I am learning.
 I hope you found it helpful.
@@ -779,4 +783,4 @@ Thanks for reading!
 
 ---
 
-**Tags:** `TryHackMe` `Active Directory` `Red Team` `Openfire` `XMPP` `NetNTLM` `Responder` `BloodHound` `GenericAll` `Invoke-Expression` `eCPPT` `CRTOP`
+---
