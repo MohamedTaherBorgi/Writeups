@@ -1,8 +1,8 @@
 # TryHackMe — Ra: Owning WindCorp's Crown Jewels
 
-**Room:** Ra
-**Difficulty:** Hard
-**Infrastructure:** Active Directory / Windows Server 2019
+**Room:** Ra␠␠
+**Difficulty:** Hard␠␠
+**Infrastructure:** Active Directory / Windows Server 2019␠␠
 **Made by:** @4nqr34z and @theart42
 
 ---
