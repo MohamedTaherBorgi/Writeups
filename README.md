@@ -25,4 +25,4 @@ for reference.
 
 > Feedback and corrections are welcome — open an issue or reach out
 > on **Medium**
-> on **LinkedIn**.
+> or **LinkedIn**.
