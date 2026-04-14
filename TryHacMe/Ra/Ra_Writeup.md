@@ -13,7 +13,7 @@
 
 ---
 
-> **A note before we start:** You might find this writeup a bit longer than the usual "run these commands, get root" format and that is **intentional**. I shared my full black-box methodology as I was learning, including the dead ends, the rabbit holes, and the reasoning behind every decision. If you are prepping for something like the eCPPT or CRTP, that mindset matters as much as the commands themselves.
+> **A note before we start:** You might find this writeup a bit longer than the usual "run these commands, get root" format and that is **intentional**. I shared my full black-box methodology as I am learning, including the dead ends, the rabbit holes, and the reasoning behind every decision. If you are prepping for something like the eCPPT or CRTP, that mindset matters as much as the commands themselves.
 
 ---
 
