@@ -5,21 +5,21 @@
 **Infrastructure:** Active Directory / Windows Server 2019  
 **Made by:** @4nqr34z and @theart42
 
+---
+
+## ![Local Image](./assets/ra.png)
+
+---
+
 > **A note before we start:** You might find this writeup longer than the typical "run these commands, get root" format and that is **intentional**.
 >
 > I shared my full **black-box methodology** as I am learning, including the **dead ends**, the **rabbit holes**, and the **reasoning behind every decision**.
 >
 > If you are prepping for something like the eCPPT or CRTP, that mindset matters as much as the commands themselves.
 
----
-
-![Local Image](./assets/1.png)
-
----
-
 ## Context
 
-*You have gained access to the internal network of WindCorp, a multibillion dollar company running an extensive social media campaign claiming to be unhackable. The goal is to take their crown jewels full access to their internal network starting from a single exposed Windows machine.*
+_You have gained access to the internal network of WindCorp, a multibillion dollar company running an extensive social media campaign claiming to be unhackable. The goal is to take their crown jewels full access to their internal network starting from a single exposed Windows machine._
 
 ---
 
@@ -212,9 +212,13 @@ VHost enumeration produced a flood of false positives, and even after filtering 
 
 ### Let's Jump Into the Website
 
+![Local Image](./assets/1.png)
+
 The main WindCorp site looks interesting, especially the "Reset Password" button at the top.
 
 Clicking it opens a new tab at `http://fire.windcorp.thm/reset.asp` with a username field and some security questions.
+
+![Local Image](./assets/2.png)
 
 Okay, let's go back to the website first.
 
@@ -229,13 +233,17 @@ Unfortunately nothing stood out.
 
 On the website, I also discovered a list of IT support staff and several employees with profile pictures.
 
-![Local Image](./assets/2.png)
+![Local Image](./assets/3.png)
 
-One stood out (**Lily Levesque**) because the image features the employee holding her dog which immediately reminded me of the reset password security question: *"What is/was your favorite pet's name?"* I examined the page source with `Ctrl+U` to dig deeper.
+![Local Image](./assets/4.png)
+
+One stood out (**Lily Levesque**) because the image features the employee holding her dog which immediately reminded me of the reset password security question: _"What is/was your favorite pet's name?"_ I examined the page source with `Ctrl+U` to dig deeper.
 
 Diving into the source code paid off immediately. Two critical pieces of intelligence:
 
 #### 1. Leaked XMPP JIDs
+
+![Local Image](./assets/5.png)
 
 The employee list is not just static text, it is pulling live status icons from the Openfire server on port 9090. This leaked many JIDs which are almost certainly User Principal Names (UPNs):
 
@@ -249,13 +257,15 @@ happyelephant792
 
 I saved these to a `users.txt` file immediately for AS-REP Roasting later.
 
-![Local Image](./assets/3.png)
-
 #### 2. The Photo Filename
+
+![Local Image](./assets/6.png)
 
 The profile picture I spotted earlier has a very revealing filename: `lilyleAndSparky.jpg` which hints the user's name is `lilyle` and her dog's name is `Sparky`.
 
 Jumping back to the reset password page: enter `lilyle` and `Sparky`, and we get a new password for `lilyle`.
+
+![Local Image](./assets/7.png)
 
 ---
 
@@ -263,9 +273,9 @@ Jumping back to the reset password page: enter `lilyle` and `Sparky`, and we get
 
 Going to the previously discovered web page on port 9090, it is the Openfire Administration Login page. I tried the `lilyle` credentials but they did not work.
 
-Okay, here I got into a rabbit hole trying to find a vulnerability for the leaked version Openfire 4.5.1
+![Local Image](./assets/8.png)
 
-![Local Image](./assets/4.png)
+Okay, here I got into a rabbit hole trying to find a vulnerability for the leaked version Openfire 4.5.1
 
 Doing some research I found there is a vulnerability for Openfire 4.5.1: CVE-2023-32315 so I tried to exploit it with Metasploit:
 
@@ -467,10 +477,12 @@ So I installed the latest stable package from the official site: https://www.ign
 
 When opening the app we can authenticate as Lily Levesque with `ChangeMe#1234` on `10.112.176.170`.
 
+![Local Image](./assets/9.png)
+
 **Important note:**  
 In the Advanced options under the Certificates tab, enable both **Accept self-signed** and **Accept expired**. The Openfire server uses a self-signed certificate, and Spark will refuse the connection otherwise.
 
-![Local Image](./assets/5.png)
+![Local Image](./assets/10.png)
 
 ### The Vulnerability — CVE-2020–12772
 
@@ -488,6 +500,8 @@ Each time the target's client or the ROAR module pre-loads the link, it authenti
 
 But first we need to target an active user. If you remember, on the website we have IT Support Staff **Buse** appearing with a green icon which hints she is the one currently logged in.
 
+![Local Image](./assets/11.png)
+
 ### Setting Up Responder
 
 ```bash
@@ -497,7 +511,7 @@ But first we need to target an active user. If you remember, on the website we h
 
 Now we send the payload to Buse Candan in Spark and wait:
 
-![Local Image](./assets/6.png)
+![Local Image](./assets/12.png)
 
 We got a catch!
 
@@ -567,7 +581,7 @@ d-----         5/7/2020   2:58AM                 Stuff
 
 Now, mostly certain that Flag 3 is on the Administrator desktop, we need to find a way to privesc to administrator or `NT AUTHORITY\SYSTEM`.
 
-These folders on Buse's Desktop are rabbit holes by the way, do not waste time connecting the dots or trying steganography on the images inside them. Like I did (ㆆ _ ㆆ).
+These folders on Buse's Desktop are rabbit holes by the way, do not waste time connecting the dots or trying steganography on the images inside them. Like I did (ㆆ \_ ㆆ).
 
 Moving on.
 
@@ -667,11 +681,15 @@ Open BloodHound:
 
 Upload the data, mark `buse` as owned, and look for the Shortest Path to `brittanycr` from owned principals.
 
+![Local Image](./assets/13.png)
+
 We find that we have **GenericAll** permission over `brittanycr` — which means basically full control of that user object. We can force change her password.
 
-![Local Image](./assets/7.png)
+![Local Image](./assets/14.png)
 
 ### Force Password Reset via GenericAll
+
+![Local Image](./assets/15.png)
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
@@ -714,8 +732,6 @@ SMB  10.112.176.170  445  FIRE  [+] windcorp.thm\buse:uzunLM+3131 (Pwn3d!)
 ```
 
 **Pwn3d! domain admin confirmed.**
-
-![Local Image](./assets/8.png)
 
 ---
 
