@@ -10,9 +10,10 @@ the rabbit holes, and the reasoning behind every pivot.
 
 ## Writeups
 
-| Room        | Platform  | Difficulty | Topics                                      |
-| ----------- | --------- | ---------- | ------------------------------------------- |
-| TryHacMe/Ra | TryHackMe | Hard       | Active Directory, XMPP, NetNTLM, BloodHound |
+| Room            | Platform  | Difficulty | Topics                                                                 |
+| --------------- | --------- | ---------- | ---------------------------------------------------------------------- |
+| Ra              | TryHackMe | Hard       | Active Directory, XMPP, NetNTLM, BloodHound, GenericAll                |
+| VulnNet: Active | TryHackMe | Medium     | Active Directory, Redis, NetNTLM, BloodHound, GPO Abuse, SharpGPOAbuse |
 
 ## About
 
