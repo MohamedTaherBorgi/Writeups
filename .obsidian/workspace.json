@@ -1,0 +1,206 @@
+{
+  "main": {
+    "id": "0fdeec9ba41c2c4c",
+    "type": "split",
+    "children": [
+      {
+        "id": "f5954c0369f08e5e",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "4a0e65d11c6fa40f",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "TryHacMe/VulnNet_Active/VulnNet_Active_Writeup.md",
+                "mode": "preview",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "VulnNet_Active_Writeup"
+            }
+          },
+          {
+            "id": "1e13943b668e0c96",
+            "type": "leaf",
+            "state": {
+              "type": "markdown",
+              "state": {
+                "file": "TryHacMe/Ra/Ra-Writeup.md",
+                "mode": "source",
+                "source": false
+              },
+              "icon": "lucide-file",
+              "title": "Ra-Writeup"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "1641815ab405d5a6",
+    "type": "split",
+    "children": [
+      {
+        "id": "598da109d53d29b2",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "a5547eb04bd6111a",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Files"
+            }
+          },
+          {
+            "id": "e9b07e24c494e29f",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Search"
+            }
+          },
+          {
+            "id": "bb8bce31f8d0b951",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "Bookmarks"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "7f46636b5242b565",
+    "type": "split",
+    "children": [
+      {
+        "id": "c9edcac249b4ddfb",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "0a403132bf31d20a",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "TryHacMe/VulnNet_Active/VulnNet_Active_Writeup.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Backlinks for VulnNet_Active_Writeup"
+            }
+          },
+          {
+            "id": "c343f9c745895782",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "TryHacMe/VulnNet_Active/VulnNet_Active_Writeup.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Outgoing links from VulnNet_Active_Writeup"
+            }
+          },
+          {
+            "id": "93aaef02524cd133",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "Tags"
+            }
+          },
+          {
+            "id": "090a1f0be24af73d",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "All properties"
+            }
+          },
+          {
+            "id": "3043713860bdd4ac",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "TryHacMe/VulnNet_Active/VulnNet_Active_Writeup.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "Outline of VulnNet_Active_Writeup"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:Open quick switcher": false,
+      "graph:Open graph view": false,
+      "canvas:Create new canvas": false,
+      "daily-notes:Open today's daily note": false,
+      "templates:Insert template": false,
+      "command-palette:Open command palette": false,
+      "bases:Create new base": false
+    }
+  },
+  "active": "4a0e65d11c6fa40f",
+  "lastOpenFiles": [
+    "TryHacMe/Ra/Ra-Writeup.md",
+    "TryHacMe/VulnNet_Active/VulnNet_Active_Writeup.md",
+    "TryHacMe/VulnNet_Active/assets/2.png"
+  ]
+}
