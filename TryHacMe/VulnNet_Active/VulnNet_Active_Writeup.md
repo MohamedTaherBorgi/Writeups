@@ -6,8 +6,11 @@
 **Made by:** @SkyWaves
 
 ---
+
 ## ![Local Image](./assets/2.png)
+
 ---
+
 ## Context
 
 VulnNet Entertainment had a bad time with their previous network which suffered multiple breaches. Now they moved their entire infrastructure and hired you again as a core penetration tester. Your objective is to get full access to the system and compromise the domain.
@@ -60,15 +63,9 @@ And reading the SMB output:
 - **`Message signing enabled and required`** — **SMB relay** is completely off the table.
 - **SMB 3.1.1** — EternalBlue and every other SMBv1 exploit is gone.
 
->So before even touching a tool, we already know: no DCSync, no Kerberoasting, no AS-REP Roasting, no relay, no legacy SMB exploits. Classic AD enumeration is heavily limited by design here.
+> So before even touching a tool, we already know: no DCSync, no Kerberoasting, no AS-REP Roasting, no relay, no legacy SMB exploits. Classic AD enumeration is heavily limited by design here.
 
 What immediately stands out instead is **port 6379 — Redis 2.8.2402**. That version number is old. Very old. And it is sitting wide open. That is going to be our angle.
-
-Immediately adding to `/etc/hosts`:
-
-```
-10.114.179.221    VULNNET-BC3TCK1SHNQ.vulnnet.local  vulnnet.local  VULNNET-BC3TCK1
-```
 
 ---
 
@@ -99,7 +96,13 @@ Derived membership: domain member
 [-] SMB connection error: STATUS_ACCESS_DENIED
 ```
 
-Null session **partially works**, anonymous bind succeeds on SMB/RPC, leaking the domain name, computer name, and domain SID. But anything deeper :  users, groups, shares, policies all come back `STATUS_ACCESS_DENIED`. 
+Immediately adding to `/etc/hosts`:
+
+```
+10.114.179.221    VULNNET-BC3TCK1SHNQ.vulnnet.local  vulnnet.local  VULNNET-BC3TCK1
+```
+
+Null session **partially works**, anonymous bind succeeds on SMB/RPC, leaking the domain name, computer name, and domain SID. But anything deeper : users, groups, shares, policies all come back `STATUS_ACCESS_DENIED`.
 Typical behavior when **SMB signing is required** and there is **no valid session key** to back up **the higher-privilege RPC calls**.
 
 Also worth noting: **domain member** is confirmed. This is not a DC. It is a workstation or member server sitting inside the `VULNNET` domain. That rules out any DC-specific attacks against this IP (e.g., DCSync).
@@ -157,7 +160,7 @@ The arbitrary file write is fully confirmed. Redis can now write any file we wan
 
 ### Writing to the Startup Folder (Didn't Work but worth mentioning)
 
-The most obvious abuse target here: the **Windows Startup folder**. 
+The most obvious abuse target here: the **Windows Startup folder**.
 Any `.bat` file placed in `C:\Users\enterprise-security\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup` will execute automatically when the service account logs in or on reboot.
 
 Run these one by one inside `redis-cli`:
@@ -185,8 +188,8 @@ The `.bat` did not execute — this lab machine has **no auto-restart** to trigg
 
 ## Phase 4 — Redis Lua: Reading Files and Leaking the User Flag
 
-After doing some research, I found something interesting about this old Redis version. Redis 2.8 has a built-in **Lua scripting engine** accessible via the `EVAL` command. 
-The Lua `dofile()` function tries to read and execute a file as Lua code. When the file is not valid Lua, Redis throws an error. 
+After doing some research, I found something interesting about this old Redis version. Redis 2.8 has a built-in **Lua scripting engine** accessible via the `EVAL` command.
+The Lua `dofile()` function tries to read and execute a file as Lua code. When the file is not valid Lua, Redis throws an error.
 And that error message **leaks the first line of the file**.
 
 We know the Redis service runs as `enterprise-security`, and we know roughly where user flags live. Let's try it:
@@ -204,7 +207,7 @@ No shell needed. The Lua sandbox in this old version is weak, `dofile()` reads l
 
 ## Phase 5 — Redis Lua: Coercing a NetNTLMv2 Hash
 
-Same `dofile()` trick, but this time instead of pointing at a local file we point at a **UNC path** on our machine. 
+Same `dofile()` trick, but this time instead of pointing at a local file we point at a **UNC path** on our machine.
 When Redis tries to open `\\our_kali_ip\something`, Windows automatically attempts to authenticate to that SMB share using **the current user's credentials NTLM authentication**. Responder catches the hash in flight.
 
 Set up Responder first:
@@ -309,7 +312,7 @@ smb: \> ls
   test                            A     5
 ```
 
-**We can write**. The NTFS permissions are more permissive than the share ACL suggested. 
+**We can write**. The NTFS permissions are more permissive than the share ACL suggested.
 Now let's replace that `.ps1` with **our own version containing a reverse shell**.
 
 ### Injecting the Reverse Shell
@@ -412,7 +415,7 @@ The graph tells a clear story: `enterprise-security` has **GenericWrite** over t
 BloodHound's built-in **help text** on GenericWrite over GPOs confirms it:
 
 ```
-With GenericWrite over a GPO, you may make modifications to that GPO which will then apply to the users and computers affected by the GPO. 
+With GenericWrite over a GPO, you may make modifications to that GPO which will then apply to the users and computers affected by the GPO.
 Use an evil policy that allows item-level targeting, such as a new immediate scheduled task.
 ```
 
@@ -491,14 +494,14 @@ THM{d540c0645975900e5bb9167aa431fc9b}
 
 What makes this room interesting is the attack chain starts somewhere you might not expect to see in an AD engagement — a forgotten Redis instance with no password sitting next to a bunch of SMB services. It is a good reminder that AD hardening does not mean much if there is an unauthenticated service running on the same box that can write arbitrary files and leak credentials via Lua scripting.
 
-The GPO abuse path at the end is also worth studying. **GenericWrite on a GPO is easily as dangerous as GenericAll on a user** — you are not modifying a single account, you are pushing policy to **every computer object in scope**. 
+The GPO abuse path at the end is also worth studying. **GenericWrite on a GPO is easily as dangerous as GenericAll on a user** — you are not modifying a single account, you are pushing policy to **every computer object in scope**.
 In a real environment that could mean full domain compromise from a single user-level permission misconfiguration, and it is the kind of edge that gets overlooked in permission audits because it lives in **Group Policy rather than user/group ACLs**.
 
 Thanks for reading.
 
 ---
 
-*Raw .md file available on GitHub: [https://github.com/MohamedTaherBorgi/Writeups](https://github.com/MohamedTaherBorgi/Writeups)*
+_Raw .md file available on GitHub: [https://github.com/MohamedTaherBorgi/Writeups](https://github.com/MohamedTaherBorgi/Writeups)_
 
 ---
 
