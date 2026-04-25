@@ -12,7 +12,7 @@
 
 ---
 
-## ![Local Image](./assets/Enterprise.png)
+![Local Image](./assets/Enterprise.png)
 
 ---
 
