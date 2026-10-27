@@ -18,7 +18,9 @@ the rabbit holes, and the reasoning behind every pivot.
 
 ## Reports
 
-- [OWASP Juice Shop Pentest Report](./OWASP%20JUICE%20SHOP%20Pentest%20Report.pdf) — A full web application security assessment covering recon, authentication weaknesses, injection issues, access control flaws, and remediation recommendations.
+- [OWASP Juice Shop Pentest Report](./OWASP%20JUICE%20SHOP%20Pentest%20Report.pdf) — A full web application security assessment covering recon, authentication weaknesses, injection issues, access control flaws, and remediation guidance.
+- [Controller Pentest Report](./Vulnyx/Controller_Pentest_Report.pdf) — A focused pentest report covering the Controller environment, privilege escalation paths, and security findings.
+- [Hat Pentest Report](./Vulnyx/Hat_Pentest_Report.pdf) — A security assessment of the Hat target, highlighting access control issues, exploitation flow, and recommended fixes.
 
 ## About
 
