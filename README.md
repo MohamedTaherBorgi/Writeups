@@ -16,6 +16,10 @@ the rabbit holes, and the reasoning behind every pivot.
 | VulnNet: Active | TryHackMe | Medium     | Active Directory, Redis, NetNTLM, BloodHound, GPO Abuse, SharpGPOAbuse                         |
 | Enterpsrise     | TryHackMe | Hard       | Active Directory, OSINT, GitHub, BloodHound, Unquoted Service Path, PowerUp, Service Hijacking |
 
+## Reports
+
+- [OWASP Juice Shop Pentest Report](./OWASP%20JUICE%20SHOP%20Pentest%20Report.pdf) — A full web application security assessment covering recon, authentication weaknesses, injection issues, access control flaws, and remediation recommendations.
+
 ## About
 
 Writing these to solidify methodology and share what I learn along the way.
